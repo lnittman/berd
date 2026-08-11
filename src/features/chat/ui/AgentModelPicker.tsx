@@ -54,6 +54,8 @@ interface AgentModelPickerProps {
   loading?: boolean;
   isCompact?: boolean;
   showSelectedModelInTrigger?: boolean;
+  /** A provider-only target must not synthesize a default model for display. */
+  showDefaultModelInTrigger?: boolean;
   triggerTabIndex?: number;
   triggerIconOnly?: boolean;
   open?: boolean;
@@ -173,6 +175,7 @@ export function AgentModelPicker({
   loading = false,
   isCompact = false,
   showSelectedModelInTrigger = true,
+  showDefaultModelInTrigger = true,
   triggerTabIndex,
   triggerIconOnly = false,
   open: controlledOpen,
@@ -263,15 +266,16 @@ export function AgentModelPicker({
     displayModelLabel,
     selectedAgentId,
   ]);
-  const triggerLabel = showSelectedModelInTrigger
-    ? resolvePickerTriggerLabel({
-        currentModelId,
-        currentModelName,
-        currentModelProviderId,
-        availableModels: displayedModels,
-        selectedAgentLabel,
-      })
-    : selectedAgentLabel;
+  const triggerLabel =
+    showSelectedModelInTrigger && (currentModelId || showDefaultModelInTrigger)
+      ? resolvePickerTriggerLabel({
+          currentModelId,
+          currentModelName,
+          currentModelProviderId,
+          availableModels: displayedModels,
+          selectedAgentLabel,
+        })
+      : selectedAgentLabel;
   const triggerTitle =
     triggerLabel ?? (loading ? t("toolbar.loading") : undefined);
   const triggerButtonSize = triggerIconOnly ? "icon-pill-sm" : "sm";
