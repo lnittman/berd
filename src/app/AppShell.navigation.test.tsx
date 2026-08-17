@@ -317,6 +317,19 @@ function seedProviderModels(
       ],
     ]),
   );
+  // Simulate a successful live inventory response: seeding a provider's
+  // display candidates alone is advisory and never establishes proof.
+  useProviderModelCacheStore.setState((state) => {
+    const providers = new Map(state.providers);
+    const existing = providers.get(providerId);
+    if (existing) {
+      providers.set(providerId, {
+        ...existing,
+        provenModelIds: models.map((model) => model.id),
+      });
+    }
+    return { providers };
+  });
 }
 
 vi.mock("@/shared/profile/buildProfile", () => ({
@@ -440,6 +453,7 @@ vi.mock("@/shared/api/acp", () => ({
   acpListSessionsPage: (...args: unknown[]) => mockAcpListSessionsPage(...args),
   acpLoadSession: (...args: unknown[]) => mockAcpLoadSession(...args),
   discoverAcpProviders: vi.fn().mockResolvedValue([]),
+  reserveAcpSessionConfiguration: () => ({ sequence: 0, clear: () => {} }),
 }));
 
 vi.mock("@/shared/api/acpApi", () => ({
@@ -1403,6 +1417,7 @@ describe("AppShell global navigation", () => {
         "openai",
         "~/goose artifacts",
         expect.any(Object),
+        expect.objectContaining({ clear: expect.any(Function) }),
       );
     });
     expect(
@@ -3426,6 +3441,7 @@ describe("AppShell global navigation", () => {
         "codex-acp",
         "~/goose artifacts",
         expect.objectContaining({ modelId: "gpt-5.4-mini" }),
+        expect.objectContaining({ clear: expect.any(Function) }),
       );
     });
     act(() => pendingPrepare.resolve({}));
@@ -3488,6 +3504,7 @@ describe("AppShell global navigation", () => {
         "databricks_v2",
         "~/goose artifacts",
         expect.objectContaining({ modelId: "goose-gpt-5-5" }),
+        expect.objectContaining({ clear: expect.any(Function) }),
       );
     });
     await waitFor(() => {
