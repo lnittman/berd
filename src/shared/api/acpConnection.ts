@@ -10,6 +10,8 @@ import {
   type SessionNotification,
   type RequestPermissionRequest,
   type RequestPermissionResponse,
+  type CreateElicitationRequest,
+  type CreateElicitationResponse,
 } from "@agentclientprotocol/sdk";
 import packageJson from "../../../package.json";
 import { createWebSocketStream } from "./createWebSocketStream";
@@ -58,6 +60,20 @@ export function setPermissionHandler(handler: PermissionRequestHandler): void {
   permissionHandler = handler;
 }
 
+export type ElicitationRequestHandler = (
+  request: CreateElicitationRequest,
+) => Promise<CreateElicitationResponse>;
+let elicitationHandler: ElicitationRequestHandler | null = null;
+let elicitationCancellationHandler: (() => void) | null = null;
+export function setElicitationHandler(
+  handler: ElicitationRequestHandler,
+): void {
+  elicitationHandler = handler;
+}
+export function setElicitationCancellationHandler(handler: () => void): void {
+  elicitationCancellationHandler = handler;
+}
+
 let clientPromise: Promise<GooseClient> | null = null;
 let resolvedClient: GooseClient | null = null;
 let activeStream: ReturnType<typeof createWebSocketStream> | null = null;
@@ -89,6 +105,8 @@ function createClientCallbacks(): () => Client {
         await notificationHandler.handleSessionNotification(notification);
       }
     },
+    unstable_createElicitation: async (request: CreateElicitationRequest) =>
+      elicitationHandler?.(request) ?? { action: "cancel" },
   });
 }
 
@@ -103,6 +121,7 @@ function monitorConnection(
     resolvedClient = null;
     clientPromise = null;
     activeStream = null;
+    elicitationCancellationHandler?.();
   };
   client.closed
     .then(() => {
@@ -129,6 +148,7 @@ export async function invalidateClientConnection(): Promise<void> {
   activeStream = null;
   resolvedClient = null;
   clientPromise = null;
+  elicitationCancellationHandler?.();
   if (stream) {
     await stream.writable.abort();
   }
@@ -178,6 +198,7 @@ async function initializeConnection(): Promise<GooseClient> {
   await client.initialize({
     protocolVersion: PROTOCOL_VERSION,
     clientCapabilities: {
+      elicitation: { form: {} },
       _meta: {
         goose: {
           mcpHostCapabilities: DEFAULT_GOOSE_MCP_HOST_CAPABILITIES,

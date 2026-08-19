@@ -129,6 +129,8 @@ vi.mock("@/shared/api/acpConnection", () => ({
   getClient: mockGetClient,
   setNotificationHandler: () => {},
   setPermissionHandler: () => {},
+  setElicitationHandler: () => {},
+  setElicitationCancellationHandler: () => {},
 }));
 
 vi.mock("@/features/security/acp/securityPermissionHandler", () => ({

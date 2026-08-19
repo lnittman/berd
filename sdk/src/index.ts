@@ -4,8 +4,8 @@ export { GooseClient } from "./goose-client.js";
 export { createHttpStream } from "./http-stream.js";
 export * from "./mcp-apps.js";
 
-export {
-  ClientSideConnection,
-  type Client,
-  type Stream,
+export type {
+  Client,
+  ClientConnection,
+  Stream,
 } from "@agentclientprotocol/sdk";

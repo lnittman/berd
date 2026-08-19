@@ -79,6 +79,10 @@ import {
   useHasPendingSecurityConfirmation,
   useRegisterSecurityConfirmationSurface,
 } from "@/features/security/ui/SecurityConfirmationPanel";
+import {
+  ElicitationPanel,
+  useHasPendingElicitation,
+} from "@/features/elicitation/ui/ElicitationPanel";
 
 const CHAT_RESPONDING_PILL_CLASS =
   "rounded-full bg-surface-chat-responding-pill-bg text-surface-chat-responding-pill-fg shadow-[var(--shadow-chat)] [--shimmer-ink:var(--color-surface-chat-responding-pill-fg)]";
@@ -129,6 +133,7 @@ export function ChatView({
   useRegisterSecurityConfirmationSurface(sessionId);
   const hasPendingSecurityConfirmation =
     useHasPendingSecurityConfirmation(sessionId);
+  const hasPendingElicitation = useHasPendingElicitation(sessionId);
   const isArtifactViewerOpen = useOpenArtifact(sessionId) !== null;
   const mountStart = useRef(performance.now());
   const terminalRootRef = useRef<HTMLDivElement | null>(null);
@@ -737,8 +742,13 @@ export function ChatView({
         )}
       >
         <SecurityConfirmationPanel sessionId={sessionId} />
+        <ElicitationPanel sessionId={sessionId} />
         <ChatInput
-          className={hasPendingSecurityConfirmation ? "hidden" : undefined}
+          className={
+            hasPendingSecurityConfirmation || hasPendingElicitation
+              ? "hidden"
+              : undefined
+          }
           surface="bare"
           innerBareSurface
           queuedMessageAccessory={
