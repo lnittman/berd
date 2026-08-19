@@ -215,6 +215,60 @@ describe("ElicitationPanel", () => {
     });
   });
 
+  it("exposes and enforces custom Other constraints", async () => {
+    const user = userEvent.setup();
+    const response = enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Choose a code",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          direction: {
+            type: "string",
+            title: "Direction",
+            oneOf: [{ const: "local", title: "Local" }],
+          },
+          direction__other: {
+            type: "string",
+            title: "Other",
+            description: "Use two uppercase letters.",
+            minLength: 2,
+            maxLength: 2,
+            pattern: "[A-Z]{2}",
+            _meta: { codex: { isOtherAnswer: true } },
+          },
+        },
+        required: ["direction"],
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+
+    const otherChoice = screen.getByRole("radio", { name: "Other" });
+    const description = screen.getByText("Use two uppercase letters.");
+    expect(otherChoice).toHaveAttribute("aria-describedby", description.id);
+    await user.click(otherChoice);
+
+    const otherInput = screen.getByRole("textbox", {
+      name: "Direction other answer",
+    });
+    expect(otherInput).toHaveAttribute("minlength", "2");
+    expect(otherInput).toHaveAttribute("maxlength", "2");
+    expect(otherInput).toHaveAttribute("pattern", "[A-Z]{2}");
+    expect(otherInput).toHaveAttribute("aria-describedby", description.id);
+
+    await user.type(otherInput, "no");
+    expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+    await user.clear(otherInput);
+    await user.type(otherInput, "OK");
+    await user.click(screen.getByRole("button", { name: "Submit" }));
+
+    await expect(response).resolves.toEqual({
+      action: "accept",
+      content: { direction__other: "OK" },
+    });
+  });
+
   it("merges an agent-provided Other option with its companion input", async () => {
     const user = userEvent.setup();
     void enqueue({
@@ -468,6 +522,43 @@ describe("ElicitationPanel", () => {
     });
   });
 
+  it("keeps a detached draft editable and navigable while response actions wait", async () => {
+    const user = userEvent.setup();
+    void enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Shape the recovery",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          first: { type: "string", title: "First" },
+          second: { type: "string", title: "Second" },
+        },
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+    act(() => useElicitationStore.getState().detachAll("session-1"));
+
+    await user.type(screen.getByRole("textbox", { name: "First" }), "One");
+    expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
+    await user.keyboard("{Enter}");
+    await user.type(screen.getByRole("textbox", { name: "Second" }), "Two");
+    await user.click(screen.getByRole("button", { name: "Back" }));
+
+    expect(screen.getByRole("textbox", { name: "First" })).toHaveValue("One");
+    await user.click(
+      screen.getByRole("button", { name: "Question 2, answered" }),
+    );
+    expect(screen.getByRole("textbox", { name: "Second" })).toHaveValue("Two");
+    expect(
+      screen.getByRole("button", { name: "Reconnecting…" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Decline to answer" }),
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  });
+
   it("records an explicit false boolean answer", async () => {
     const user = userEvent.setup();
     const response = enqueue({
@@ -551,6 +642,55 @@ describe("ElicitationPanel", () => {
     );
     await user.type(screen.getByRole("textbox", { name: "Name" }), "Perch");
     await user.click(screen.getByRole("button", { name: "Submit" }));
+
+    await waitFor(() => expect(composer).toHaveFocus());
+  });
+
+  it("restores focus when a recovered Other input mounts with autofocus", async () => {
+    render(
+      <>
+        <textarea aria-label="Message" />
+        <ElicitationPanel sessionId="session-1" />
+      </>,
+    );
+    const composer = screen.getByRole("textbox", { name: "Message" });
+    composer.focus();
+
+    act(() => {
+      void enqueue({
+        mode: "form",
+        sessionId: "session-1",
+        message: "Choose a direction",
+        requestedSchema: {
+          type: "object",
+          properties: {
+            direction: {
+              type: "string",
+              title: "Direction",
+              oneOf: [
+                { const: "local", title: "Local" },
+                { const: "other", title: "Other" },
+              ],
+            },
+            direction__other: {
+              type: "string",
+              title: "Other",
+              _meta: { codex: { isOtherAnswer: true } },
+            },
+          },
+        },
+      });
+      useElicitationStore
+        .getState()
+        .setValue("session-1", "direction__other", "Recovered draft");
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("form", { name: "Choose a direction" }),
+      ).toHaveFocus(),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
     await waitFor(() => expect(composer).toHaveFocus());
   });

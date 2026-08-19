@@ -118,7 +118,8 @@ export function isOtherCompanionField(
   properties: Record<string, ElicitationPropertySchema>,
   fieldName: string,
 ): boolean {
-  if (!isOtherCompanion(fieldName, properties[fieldName])) return false;
+  const schema = properties[fieldName];
+  if (!schema || !isOtherCompanion(fieldName, schema)) return false;
   return ["__other", "_custom"].some((suffix) => {
     if (!fieldName.endsWith(suffix)) return false;
     return fieldName.slice(0, -suffix.length) in properties;

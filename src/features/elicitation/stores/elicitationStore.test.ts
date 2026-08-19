@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { CreateElicitationResponse } from "@agentclientprotocol/sdk";
 import {
   type FormElicitationRequest,
+  isOtherCompanionField,
   useElicitationStore,
 } from "./elicitationStore";
 
@@ -49,6 +50,15 @@ describe("elicitationStore", () => {
   beforeEach(() => {
     window.localStorage.clear();
     useElicitationStore.setState({ pendingBySessionId: {} });
+  });
+
+  it("treats unknown persisted fields as ordinary fields", () => {
+    expect(
+      isOtherCompanionField(
+        request.requestedSchema.properties,
+        "missing_custom",
+      ),
+    ).toBe(false);
   });
 
   it("returns single-choice, multiple-choice, and free-text values together", async () => {
