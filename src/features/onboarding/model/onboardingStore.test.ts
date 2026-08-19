@@ -97,20 +97,18 @@ describe("onboarding persistence", () => {
 
   it("persists versioned state and hydrates it on a new lifecycle", () => {
     dispatchOnboarding({ type: "start" });
-    dispatchOnboarding({ type: "select-agent", agentId: "builder" });
-
     const persisted = JSON.parse(
       window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "null",
     );
     expect(persisted).toMatchObject({
       version: ONBOARDING_STORAGE_VERSION,
-      state: { lifecycle: "in-progress", selectedAgentId: "builder" },
+      state: { lifecycle: "in-progress", selectedAgentId: null },
     });
 
     resetOnboardingStoreForTests();
     expect(getOnboardingSnapshot()).toMatchObject({
       lifecycle: "in-progress",
-      selectedAgentId: "builder",
+      selectedAgentId: null,
     });
   });
 
@@ -183,7 +181,7 @@ describe("onboarding persistence", () => {
         state: {
           ...INITIAL_ONBOARDING_STATE,
           selectedWorkTypeIds: ["engineering", "engineering"],
-          selectedAgentId: "builder",
+          selectedAgentId: null,
           selectedHarnessId: "goose",
           completedHarnessSetupIds: ["goose", "goose", "claude-acp"],
         },
@@ -192,7 +190,7 @@ describe("onboarding persistence", () => {
 
     expect(getOnboardingSnapshot()).toMatchObject({
       selectedWorkTypeIds: ["engineering"],
-      selectedAgentId: "builder",
+      selectedAgentId: null,
       selectedHarnessId: "goose",
       completedHarnessSetupIds: ["goose", "claude-acp"],
     });
