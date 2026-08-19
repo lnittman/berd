@@ -384,8 +384,6 @@ export function AgentModelPicker({
   const pickerWidth = isWidePicker
     ? PICKER_WIDTH_EXPANDED_PX
     : PICKER_WIDTH_COMPACT_PX;
-  const portalContainer =
-    triggerRef.current?.closest<HTMLElement>(".goose-zoom-scope");
 
   // Land keyboard focus in the revealed column, since the reveal button that
   // held focus unmounts with it.
@@ -479,7 +477,6 @@ export function AgentModelPicker({
       </Tooltip>
       <PopoverContent
         ref={contentRef}
-        portalContainer={portalContainer}
         align={resolvedContentAlign}
         collisionPadding={contentCollisionPadding}
         className={cn(

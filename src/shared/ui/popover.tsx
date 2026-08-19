@@ -19,15 +19,11 @@ type PopoverContentProps = React.ComponentProps<
   typeof PopoverPrimitive.Content
 > & {
   variant?: "default" | "tooltip";
-  portalContainer?: React.ComponentProps<
-    typeof PopoverPrimitive.Portal
-  >["container"];
 };
 
 function PopoverContent({
   className,
   align = "center",
-  portalContainer,
   sideOffset,
   variant = "default",
   children,
@@ -37,7 +33,7 @@ function PopoverContent({
   const resolvedSideOffset = sideOffset ?? (isTooltipVariant ? 0 : 4);
 
   return (
-    <PopoverPrimitive.Portal container={portalContainer}>
+    <PopoverPrimitive.Portal>
       <PopoverPrimitive.Content
         data-slot="popover-content"
         data-variant={variant}

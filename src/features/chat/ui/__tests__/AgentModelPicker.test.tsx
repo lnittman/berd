@@ -21,33 +21,6 @@ const AGENTS = [
 ];
 
 describe("AgentModelPicker", () => {
-  it("opens below by default inside the app zoom scope", async () => {
-    const user = userEvent.setup();
-
-    const { container } = render(
-      <div className="goose-zoom-scope">
-        <AgentModelPicker
-          agents={AGENTS}
-          selectedAgentId="goose"
-          onAgentChange={vi.fn()}
-          currentModelId="gpt-4o"
-          currentModelName="GPT-4o"
-          availableModels={[{ id: "gpt-4o", name: "GPT-4o" }]}
-          onModelChange={vi.fn()}
-        />
-      </div>,
-    );
-
-    await user.click(
-      screen.getByRole("button", { name: /choose agent and model/i }),
-    );
-
-    const zoomScope = container.querySelector(".goose-zoom-scope");
-    const content = document.querySelector('[data-slot="popover-content"]');
-    expect(content).toHaveAttribute("data-side", "bottom");
-    expect(zoomScope).toContainElement(content as HTMLElement);
-  });
-
   it("shows the selected agent and model in the trigger", () => {
     render(
       <AgentModelPicker

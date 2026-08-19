@@ -3,8 +3,8 @@ import { useAgentStore } from "@/features/agents/stores/agentStore";
 import {
   appendAttachmentPaths,
   buildAcpImages,
+  buildMessageAttachments,
 } from "@/features/chat/lib/attachments";
-import { createLocalUserMessage } from "@/features/chat/lib/localUserMessage";
 import {
   getSessionTitleFromDraft,
   isDefaultChatTitle,
@@ -37,6 +37,7 @@ import {
   type MessageMetadata,
   type MessageChip,
   createSystemNotificationMessage,
+  createUserMessage,
 } from "@/shared/types/messages";
 
 /** Persona recorded on the user message and forwarded to the ACP send. */
@@ -248,13 +249,34 @@ export async function dispatchPrompt(
     const commitUserMessage = () => {
       throwIfAborted(signal);
       beforeUserMessageCommitted?.();
-      const userMessage = createLocalUserMessage(text, {
-        displayText,
-        attachments,
+      const userMessage = createUserMessage(
+        displayText ?? text,
+        buildMessageAttachments(attachments),
         chips,
-        persona,
-        metadata: userMessageMetadata,
-      });
+      );
+      if (persona) {
+        userMessage.metadata = {
+          ...userMessage.metadata,
+          targetPersonaId: persona.id,
+          targetPersonaName: persona.name,
+        };
+      }
+      if (userMessageMetadata) {
+        userMessage.metadata = {
+          ...userMessage.metadata,
+          ...userMessageMetadata,
+        };
+      }
+      // Embed image content blocks into the user message for local display.
+      if (images && images.length > 0) {
+        for (const img of images) {
+          userMessage.content.push({
+            type: "image",
+            data: img.base64,
+            mimeType: img.mimeType,
+          });
+        }
+      }
       addMessage(sessionId, userMessage);
       userMessageCommitted = true;
       setChatState(sessionId, "thinking");

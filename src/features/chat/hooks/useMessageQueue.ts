@@ -1,10 +1,4 @@
-import {
-  useEffect,
-  useCallback,
-  useMemo,
-  useRef,
-  useSyncExternalStore,
-} from "react";
+import { useEffect, useCallback, useMemo, useRef } from "react";
 import type { ChatState } from "@/shared/types/chat";
 import { isPromiseLike } from "@/shared/lib/isPromiseLike";
 import type { ChatAttachmentDraft } from "@/shared/types/messages";
@@ -45,31 +39,6 @@ interface QueueAttemptLease {
 // remount while a transport promise is unresolved; a module-scoped lease keeps
 // the replacement owner from overlapping the still-live attempt.
 const queueAttemptLeaseBySession = new Map<string, QueueAttemptLease>();
-const queueAttemptListenersBySession = new Map<string, Set<() => void>>();
-
-function getDispatchingRecordId(sessionId: string): string | null {
-  return queueAttemptLeaseBySession.get(sessionId)?.recordId ?? null;
-}
-
-function subscribeToQueueAttempt(
-  sessionId: string,
-  listener: () => void,
-): () => void {
-  const listeners =
-    queueAttemptListenersBySession.get(sessionId) ?? new Set<() => void>();
-  listeners.add(listener);
-  queueAttemptListenersBySession.set(sessionId, listeners);
-  return () => {
-    listeners.delete(listener);
-    if (listeners.size === 0) queueAttemptListenersBySession.delete(sessionId);
-  };
-}
-
-function notifyQueueAttemptChanged(sessionId: string): void {
-  for (const listener of queueAttemptListenersBySession.get(sessionId) ?? []) {
-    listener();
-  }
-}
 
 function getQueuedMessageKey(
   queuedMessage: QueuedMessageRecord | null,
@@ -135,19 +104,6 @@ export function useMessageQueue(
   const queuedMessageKey = useMemo(
     () => getQueuedMessageKey(queuedRecord),
     [queuedRecord],
-  );
-  const subscribeDispatchingRecord = useCallback(
-    (listener: () => void) => subscribeToQueueAttempt(sessionId, listener),
-    [sessionId],
-  );
-  const readDispatchingRecord = useCallback(
-    () => getDispatchingRecordId(sessionId),
-    [sessionId],
-  );
-  const dispatchingRecordId = useSyncExternalStore(
-    subscribeDispatchingRecord,
-    readDispatchingRecord,
-    readDispatchingRecord,
   );
 
   // Claim foreground ownership of this session's queue so the background
@@ -246,17 +202,12 @@ export function useMessageQueue(
         payload,
         targetLease,
       });
-      notifyQueueAttemptChanged(sessionId);
 
       const { text, persona, attachments, sendOptions } = payload;
       const queuedPersona = personaIntentToOverride(persona);
       let userMessageCommitted = false;
       const queuedSendOptions = {
         ...sendOptions,
-        userMessageMetadata: {
-          ...sendOptions?.userMessageMetadata,
-          queueRecordId: key,
-        },
         beforeUserMessageCommitted: () => {
           const state = useChatStore.getState();
           const latestQueuedMessage =
@@ -287,7 +238,6 @@ export function useMessageQueue(
         if (activeLease?.recordId === key && activeLease.payload === payload) {
           queueAttemptLeaseBySession.delete(sessionId);
           activeLease.targetLease.release();
-          notifyQueueAttemptChanged(sessionId);
         }
 
         const latestQueuedMessage =
@@ -598,7 +548,6 @@ export function useMessageQueue(
     queuedMessage,
     queuedRecord,
     queuedRecords,
-    dispatchingRecordId,
     enqueue,
     dismiss,
     update,

@@ -59,62 +59,6 @@ describe("useMessageQueue", () => {
     });
   });
 
-  it("exposes an in-flight queue head for immediate transcript projection", async () => {
-    const sendResult = deferred<boolean>();
-    const sendMessage = vi.fn(() => sendResult.promise);
-    const { result } = renderHook(() =>
-      useMessageQueue("s1", "idle", sendMessage),
-    );
-
-    act(() => expect(result.current.enqueue("show me now")).toBe(true));
-    const recordId =
-      useChatStore.getState().queuedMessageBySession.s1?.[0]?.recordId;
-
-    await waitFor(() => expect(sendMessage).toHaveBeenCalledOnce());
-    expect(result.current.dispatchingRecordId).toBe(recordId);
-    expect(sendMessage).toHaveBeenCalledWith(
-      "show me now",
-      undefined,
-      undefined,
-      expect.objectContaining({
-        userMessageMetadata: { queueRecordId: recordId },
-      }),
-    );
-
-    act(() => sendResult.resolve(true));
-    await waitFor(() => expect(result.current.dispatchingRecordId).toBeNull());
-    expect(useChatStore.getState().queuedMessageBySession.s1).toBeUndefined();
-  });
-
-  it("clears the projected attempt across an in-flight owner remount", async () => {
-    const sendResult = deferred<boolean>();
-    const sendMessage = vi.fn(() => sendResult.promise);
-    const owner = renderHook(() => useMessageQueue("s1", "idle", sendMessage));
-
-    act(() =>
-      expect(owner.result.current.enqueue("survive remount")).toBe(true),
-    );
-    const recordId =
-      useChatStore.getState().queuedMessageBySession.s1?.[0]?.recordId;
-    await waitFor(() =>
-      expect(owner.result.current.dispatchingRecordId).toBe(recordId),
-    );
-
-    owner.unmount();
-    const replacement = renderHook(() =>
-      useMessageQueue("s1", "idle", sendMessage),
-    );
-    expect(replacement.result.current.dispatchingRecordId).toBe(recordId);
-
-    act(() => sendResult.resolve(false));
-    await waitFor(() =>
-      expect(replacement.result.current.dispatchingRecordId).toBeNull(),
-    );
-    expect(
-      useChatStore.getState().queuedMessageBySession.s1?.[0]?.recordId,
-    ).toBe(recordId);
-  });
-
   it("admits under a pending draft id, then dispatches once after promotion", async () => {
     useChatSessionStore.setState({
       sessions: [
