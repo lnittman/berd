@@ -259,6 +259,8 @@ export interface MessageMetadata {
   personaId?: string;
   personaName?: string;
   providerId?: string;
+  /** Renderer-only identity linking an optimistic queued turn to its commit. */
+  queueRecordId?: string;
   targetPersonaId?: string;
   targetPersonaName?: string;
   completionStatus?: MessageCompletionStatus;
