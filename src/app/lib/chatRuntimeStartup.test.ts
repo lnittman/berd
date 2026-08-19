@@ -39,6 +39,7 @@ vi.mock("@/features/chat/stores/chatSessionStore", () => ({
 }));
 
 vi.mock("@/features/providers/curatedProviders", () => ({
+  CURATED_PROVIDER_CATALOG: [],
   getCuratedAgentProviders: () => [],
 }));
 

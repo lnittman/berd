@@ -1,7 +1,16 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CreateElicitationRequest } from "@agentclientprotocol/sdk";
 import { handleElicitationRequest } from "./elicitationRequestHandler";
 import { useElicitationStore } from "../stores/elicitationStore";
+
+const mocks = vi.hoisted(() => ({
+  continueRecoveredElicitation: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../lib/recoveredElicitationContinuation", () => ({
+  continueRecoveredElicitation: (...args: unknown[]) =>
+    mocks.continueRecoveredElicitation(...args),
+}));
 
 const request: CreateElicitationRequest = {
   mode: "form",
@@ -23,7 +32,11 @@ const request: CreateElicitationRequest = {
 };
 
 describe("handleElicitationRequest", () => {
-  beforeEach(() => useElicitationStore.setState({ pendingBySessionId: {} }));
+  beforeEach(() => {
+    window.localStorage.clear();
+    mocks.continueRecoveredElicitation.mockClear();
+    useElicitationStore.setState({ pendingBySessionId: {} });
+  });
 
   it("queues a form and returns the accepted structured content", async () => {
     const response = handleElicitationRequest(request);
@@ -59,5 +72,67 @@ describe("handleElicitationRequest", () => {
       { action: "cancel" },
       { action: "cancel" },
     ]);
+  });
+
+  it("preserves a detached draft and reattaches the replayed responder", async () => {
+    const first = handleElicitationRequest({
+      ...request,
+      _meta: { goose: { elicitationId: "question-1" } },
+    });
+    const store = useElicitationStore.getState();
+    store.setValue("session-1", "direction", "local");
+    store.detachAll("session-1");
+
+    const replay = handleElicitationRequest({
+      ...request,
+      _meta: {
+        goose: {
+          elicitationId: "question-1",
+          recovered: true,
+          continuation: "response",
+        },
+      },
+    });
+    expect(
+      useElicitationStore.getState().pendingBySessionId["session-1"][0].content,
+    ).toEqual({ direction: "local" });
+
+    useElicitationStore.getState().accept("session-1");
+    await expect(replay).resolves.toEqual({
+      action: "accept",
+      content: { direction: "local" },
+    });
+    expect(mocks.continueRecoveredElicitation).not.toHaveBeenCalled();
+
+    // The disconnected transport's resolver is intentionally left unresolved.
+    void first;
+  });
+
+  it("continues a full-restart recovery as a normal prompt", async () => {
+    vi.useFakeTimers();
+    const recoveredRequest = {
+      ...request,
+      _meta: {
+        goose: {
+          elicitationId: "question-2",
+          recovered: true,
+          continuation: "prompt",
+        },
+      },
+    } satisfies CreateElicitationRequest;
+    const response = handleElicitationRequest(recoveredRequest);
+    useElicitationStore.getState().setValue("session-1", "direction", "issue");
+    useElicitationStore.getState().accept("session-1");
+
+    await expect(response).resolves.toEqual({
+      action: "accept",
+      content: { direction: "issue" },
+    });
+    await vi.runAllTimersAsync();
+    expect(mocks.continueRecoveredElicitation).toHaveBeenCalledWith(
+      recoveredRequest,
+      { action: "accept", content: { direction: "issue" } },
+    );
+    vi.useRealTimers();
   });
 });

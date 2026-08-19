@@ -311,6 +311,30 @@
     "openDownloads": "Open Downloads",
     "openDownloadsError": "Couldn't open Downloads."
   },
+  "elicitation": {
+    "answerPlaceholder": "Type your answer",
+    "answeredQuestionLabel": "Question {{question}}, answered",
+    "back": "Back",
+    "cancel": "Cancel",
+    "chooseUpTo": "Choose up to {{count}}.",
+    "continuesAfterRestart": "Continues in a new message after restart",
+    "decline": "Decline to answer",
+    "next": "Next",
+    "no": "No",
+    "other": "Other",
+    "otherAnswerLabel": "{{title}} other answer",
+    "questionLabel": "Question {{question}}",
+    "questionNavigation": "Questions",
+    "questionProgress": "Question {{current}} of {{total}}",
+    "reconnected": "Reconnected to the waiting agent",
+    "reconnecting": "Reconnecting…",
+    "reconnectingDescription": "Reconnecting this question to the agent…",
+    "recoveredQuestion": "Recovered question",
+    "reviewAndSubmit": "Review and submit",
+    "submit": "Submit",
+    "waitingStatus": "Waiting for your answer",
+    "yes": "Yes"
+  },
   "input": {
     "ariaLabel": "Chat message input",
     "placeholder": "Chat with {{agent}}, @ for agents/files, or / for skills"

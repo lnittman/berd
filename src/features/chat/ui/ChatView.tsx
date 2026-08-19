@@ -9,6 +9,7 @@ import {
 } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { IconLayoutSidebarLeftCollapse } from "@tabler/icons-react";
+import { CircleHelp } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { VirtualMessageTimelineGate } from "./VirtualMessageTimelineGate";
 import { ChatSearchBar } from "./ChatSearchBar";
@@ -692,6 +693,18 @@ export function ChatView({
     >
       <ActiveChatBerdIndicator size={14} />
       <span>{readOnlyStatus}</span>
+    </div>
+  ) : hasPendingElicitation ? (
+    <div
+      className={cn(
+        "chat-response-status-enter flex h-8 items-center gap-2 px-3 text-sm",
+        CHAT_RESPONDING_PILL_CLASS,
+      )}
+      role="status"
+      aria-live="polite"
+    >
+      <CircleHelp className="size-3.5" aria-hidden="true" />
+      <span>{t("elicitation.waitingStatus")}</span>
     </div>
   ) : shouldShowLoadingIndicator ? (
     <AnimatePresence initial={false}>

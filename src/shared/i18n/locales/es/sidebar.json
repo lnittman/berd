@@ -78,6 +78,7 @@
     "pinned": "Fijados"
   },
   "status": {
+    "awaitingResponse": "Esperando tu respuesta",
     "chatActive": "Chat activo",
     "pinnedChat": "Chat fijado",
     "unreadMessages": "Mensajes no leídos"

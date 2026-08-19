@@ -310,6 +310,30 @@
     "openDownloads": "Abrir Descargas",
     "openDownloadsError": "No se pudo abrir Descargas."
   },
+  "elicitation": {
+    "answerPlaceholder": "Escribe tu respuesta",
+    "answeredQuestionLabel": "Pregunta {{question}}, respondida",
+    "back": "Atrás",
+    "cancel": "Cancelar",
+    "chooseUpTo": "Elige hasta {{count}}.",
+    "continuesAfterRestart": "Continúa en un mensaje nuevo después de reiniciar",
+    "decline": "Prefiero no responder",
+    "next": "Siguiente",
+    "no": "No",
+    "other": "Otra respuesta",
+    "otherAnswerLabel": "Otra respuesta para {{title}}",
+    "questionLabel": "Pregunta {{question}}",
+    "questionNavigation": "Preguntas",
+    "questionProgress": "Pregunta {{current}} de {{total}}",
+    "reconnected": "Reconectada con el agente que espera",
+    "reconnecting": "Reconectando…",
+    "reconnectingDescription": "Reconectando esta pregunta con el agente…",
+    "recoveredQuestion": "Pregunta recuperada",
+    "reviewAndSubmit": "Revisa y envía",
+    "submit": "Enviar",
+    "waitingStatus": "Esperando tu respuesta",
+    "yes": "Sí"
+  },
   "input": {
     "ariaLabel": "Entrada de mensaje del chat",
     "placeholder": "Chatea con {{agent}}, @ para agentes/archivos o / para habilidades"

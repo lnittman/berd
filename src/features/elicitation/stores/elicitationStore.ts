@@ -1,34 +1,176 @@
 import { create } from "zustand";
 import type {
-  CreateElicitationRequest,
   CreateElicitationResponse,
   ElicitationContentValue,
+  ElicitationPropertySchema,
   ElicitationSchema,
 } from "@agentclientprotocol/sdk";
 
+const ELICITATION_STORAGE_KEY = "berd:pending-elicitations:v1";
+
+export type FormElicitationRequest = {
+  sessionId: string;
+  mode: "form";
+  message: string;
+  requestedSchema: ElicitationSchema;
+  toolCallId?: string | null;
+  _meta?: Record<string, unknown> | null;
+};
+
+export type ElicitationContinuation = "response" | "prompt";
+
 export interface PendingElicitation {
-  request: CreateElicitationRequest & {
-    sessionId: string;
-    mode: "form";
-    requestedSchema: ElicitationSchema;
-  };
+  id: string;
+  request: FormElicitationRequest;
   content: Record<string, ElicitationContentValue>;
   step: number;
-  resolve: (response: CreateElicitationResponse) => void;
+  recovered: boolean;
+  continuation: ElicitationContinuation;
+  resolve: ((response: CreateElicitationResponse) => void) | null;
 }
 
 interface ElicitationState {
   pendingBySessionId: Record<string, PendingElicitation[]>;
-  enqueue: (pending: Omit<PendingElicitation, "content" | "step">) => void;
+  enqueue: (pending: {
+    request: FormElicitationRequest;
+    resolve: (response: CreateElicitationResponse) => void;
+  }) => void;
   setValue: (
     sessionId: string,
     key: string,
-    value: ElicitationContentValue,
+    value: ElicitationContentValue | undefined,
   ) => void;
   setStep: (sessionId: string, step: number) => void;
   accept: (sessionId: string) => void;
+  decline: (sessionId: string) => void;
   cancel: (sessionId: string) => void;
+  detachAll: (sessionId?: string) => void;
   cancelAll: (sessionId?: string) => void;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value != null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function stableLegacyId(request: FormElicitationRequest): string {
+  const source = JSON.stringify([
+    request.sessionId,
+    request.message,
+    request.requestedSchema,
+  ]);
+  let hash = 2166136261;
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `legacy:${request.sessionId}:${(hash >>> 0).toString(36)}`;
+}
+
+export function getElicitationMetadata(request: FormElicitationRequest): {
+  id: string;
+  recovered: boolean;
+  continuation: ElicitationContinuation;
+} {
+  const goose = asRecord(asRecord(request._meta)?.goose);
+  return {
+    id:
+      typeof goose?.elicitationId === "string"
+        ? goose.elicitationId
+        : typeof request.toolCallId === "string" &&
+            request.toolCallId.length > 0
+          ? `tool:${request.sessionId}:${request.toolCallId}`
+          : stableLegacyId(request),
+    recovered: goose?.recovered === true,
+    continuation: goose?.continuation === "prompt" ? "prompt" : "response",
+  };
+}
+
+function isOtherCompanion(
+  name: string,
+  schema: ElicitationPropertySchema,
+): boolean {
+  const raw = schema as Record<string, unknown>;
+  const meta = asRecord(raw._meta);
+  const codex = asRecord(meta?.codex);
+  const title = typeof raw.title === "string" ? raw.title.toLowerCase() : "";
+  return (
+    codex?.isOtherAnswer === true ||
+    ((name.endsWith("__other") || name.endsWith("_custom")) &&
+      title === "other")
+  );
+}
+
+export function findOtherCompanion(
+  properties: Record<string, ElicitationPropertySchema>,
+  fieldName: string,
+): [string, ElicitationPropertySchema] | null {
+  for (const suffix of ["__other", "_custom"]) {
+    const name = `${fieldName}${suffix}`;
+    const schema = properties[name];
+    if (schema && isOtherCompanion(name, schema)) return [name, schema];
+  }
+  return null;
+}
+
+export function isOtherCompanionField(
+  properties: Record<string, ElicitationPropertySchema>,
+  fieldName: string,
+): boolean {
+  if (!isOtherCompanion(fieldName, properties[fieldName])) return false;
+  return ["__other", "_custom"].some((suffix) => {
+    if (!fieldName.endsWith(suffix)) return false;
+    return fieldName.slice(0, -suffix.length) in properties;
+  });
+}
+
+function initialContent(
+  request: FormElicitationRequest,
+): Record<string, ElicitationContentValue> {
+  const content: Record<string, ElicitationContentValue> = {};
+  for (const [name, schema] of Object.entries(
+    request.requestedSchema.properties ?? {},
+  )) {
+    const value = (schema as Record<string, unknown>).default;
+    if (
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean" ||
+      (Array.isArray(value) && value.every((item) => typeof item === "string"))
+    ) {
+      content[name] = value as ElicitationContentValue;
+    }
+  }
+  return content;
+}
+
+function normalizedContent(
+  pending: PendingElicitation,
+): Record<string, ElicitationContentValue> {
+  const properties = pending.request.requestedSchema.properties ?? {};
+  const content = Object.fromEntries(
+    Object.entries(pending.content).filter(([, value]) => {
+      if (typeof value === "string") return value.trim().length > 0;
+      if (Array.isArray(value)) return value.length > 0;
+      return true;
+    }),
+  ) as Record<string, ElicitationContentValue>;
+
+  for (const fieldName of Object.keys(properties)) {
+    const companion = findOtherCompanion(properties, fieldName);
+    if (!companion) continue;
+    const [companionName] = companion;
+    const custom = content[companionName];
+    if (typeof custom === "string" && custom.trim()) {
+      delete content[fieldName];
+      content[companionName] = custom.trim();
+    } else {
+      delete content[companionName];
+    }
+  }
+
+  return content;
 }
 
 function removeFirst(
@@ -42,29 +184,127 @@ function removeFirst(
   return next;
 }
 
+function loadPersisted(): Record<string, PendingElicitation[]> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(ELICITATION_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = asRecord(JSON.parse(raw));
+    if (!parsed) return {};
+
+    const queues: Record<string, PendingElicitation[]> = {};
+    for (const [sessionId, value] of Object.entries(parsed)) {
+      if (!Array.isArray(value)) continue;
+      const queue = value.flatMap((candidate) => {
+        const item = asRecord(candidate);
+        const request = asRecord(item?.request);
+        if (
+          !item ||
+          typeof item.id !== "string" ||
+          request?.mode !== "form" ||
+          request.sessionId !== sessionId ||
+          !asRecord(request.requestedSchema)
+        ) {
+          return [];
+        }
+        return [
+          {
+            id: item.id,
+            request: request as FormElicitationRequest,
+            content: (asRecord(item.content) ?? {}) as Record<
+              string,
+              ElicitationContentValue
+            >,
+            step:
+              typeof item.step === "number" && Number.isFinite(item.step)
+                ? Math.max(0, Math.floor(item.step))
+                : 0,
+            recovered: item.recovered === true,
+            continuation:
+              item.continuation === "prompt" ? "prompt" : "response",
+            resolve: null,
+          } satisfies PendingElicitation,
+        ];
+      });
+      if (queue.length) queues[sessionId] = queue;
+    }
+    return queues;
+  } catch {
+    return {};
+  }
+}
+
+function persist(queues: Record<string, PendingElicitation[]>): void {
+  if (typeof window === "undefined") return;
+  try {
+    const serializable = Object.fromEntries(
+      Object.entries(queues).map(([sessionId, queue]) => [
+        sessionId,
+        queue.map(({ resolve: _resolve, ...pending }) => pending),
+      ]),
+    );
+    window.localStorage.setItem(
+      ELICITATION_STORAGE_KEY,
+      JSON.stringify(serializable),
+    );
+  } catch {
+    // Persistence is best-effort; the live responder remains authoritative.
+  }
+}
+
 export const useElicitationStore = create<ElicitationState>((set, get) => ({
-  pendingBySessionId: {},
-  enqueue: (pending) =>
-    set((state) => ({
-      pendingBySessionId: {
-        ...state.pendingBySessionId,
-        [pending.request.sessionId]: [
-          ...(state.pendingBySessionId[pending.request.sessionId] ?? []),
-          { ...pending, content: {}, step: 0 },
-        ],
-      },
-    })),
+  pendingBySessionId: loadPersisted(),
+  enqueue: ({ request, resolve }) =>
+    set((state) => {
+      const metadata = getElicitationMetadata(request);
+      const queue = state.pendingBySessionId[request.sessionId] ?? [];
+      const existingIndex = queue.findIndex(
+        (pending) => pending.id === metadata.id,
+      );
+      const pending: PendingElicitation =
+        existingIndex >= 0
+          ? {
+              ...queue[existingIndex],
+              request,
+              recovered: metadata.recovered,
+              continuation: metadata.continuation,
+              resolve: queue[existingIndex].resolve
+                ? (response) => {
+                    queue[existingIndex].resolve?.(response);
+                    resolve(response);
+                  }
+                : resolve,
+            }
+          : {
+              id: metadata.id,
+              request,
+              content: initialContent(request),
+              step: 0,
+              recovered: metadata.recovered,
+              continuation: metadata.continuation,
+              resolve,
+            };
+      const nextQueue = [...queue];
+      if (existingIndex >= 0) nextQueue[existingIndex] = pending;
+      else nextQueue.push(pending);
+      return {
+        pendingBySessionId: {
+          ...state.pendingBySessionId,
+          [request.sessionId]: nextQueue,
+        },
+      };
+    }),
   setValue: (sessionId, key, value) =>
     set((state) => {
       const queue = state.pendingBySessionId[sessionId];
       if (!queue?.[0]) return state;
+      const content = { ...queue[0].content };
+      if (value === undefined) delete content[key];
+      else content[key] = value;
       return {
         pendingBySessionId: {
           ...state.pendingBySessionId,
-          [sessionId]: [
-            { ...queue[0], content: { ...queue[0].content, [key]: value } },
-            ...queue.slice(1),
-          ],
+          [sessionId]: [{ ...queue[0], content }, ...queue.slice(1)],
         },
       };
     }),
@@ -75,17 +315,31 @@ export const useElicitationStore = create<ElicitationState>((set, get) => ({
       return {
         pendingBySessionId: {
           ...state.pendingBySessionId,
-          [sessionId]: [{ ...queue[0], step }, ...queue.slice(1)],
+          [sessionId]: [
+            { ...queue[0], step: Math.max(0, step) },
+            ...queue.slice(1),
+          ],
         },
       };
     }),
   accept: (sessionId) => {
     const pending = get().pendingBySessionId[sessionId]?.[0];
-    if (!pending) return;
+    if (!pending?.resolve) return;
     set((state) => ({
       pendingBySessionId: removeFirst(state.pendingBySessionId, sessionId),
     }));
-    pending.resolve({ action: "accept", content: pending.content });
+    pending.resolve({
+      action: "accept",
+      content: normalizedContent(pending),
+    });
+  },
+  decline: (sessionId) => {
+    const pending = get().pendingBySessionId[sessionId]?.[0];
+    if (!pending?.resolve) return;
+    set((state) => ({
+      pendingBySessionId: removeFirst(state.pendingBySessionId, sessionId),
+    }));
+    pending.resolve({ action: "decline" });
   },
   cancel: (sessionId) => {
     const pending = get().pendingBySessionId[sessionId]?.[0];
@@ -93,8 +347,20 @@ export const useElicitationStore = create<ElicitationState>((set, get) => ({
     set((state) => ({
       pendingBySessionId: removeFirst(state.pendingBySessionId, sessionId),
     }));
-    pending.resolve({ action: "cancel" });
+    pending.resolve?.({ action: "cancel" });
   },
+  detachAll: (sessionId) =>
+    set((state) => {
+      const pendingBySessionId = Object.fromEntries(
+        Object.entries(state.pendingBySessionId).map(([id, queue]) => [
+          id,
+          !sessionId || id === sessionId
+            ? queue.map((pending) => ({ ...pending, resolve: null }))
+            : queue,
+        ]),
+      );
+      return { pendingBySessionId };
+    }),
   cancelAll: (sessionId) => {
     const queues = get().pendingBySessionId;
     const targets = sessionId
@@ -107,7 +373,9 @@ export const useElicitationStore = create<ElicitationState>((set, get) => ({
       return { pendingBySessionId: next };
     });
     for (const pending of Object.values(targets).flat()) {
-      pending.resolve({ action: "cancel" });
+      pending.resolve?.({ action: "cancel" });
     }
   },
 }));
+
+useElicitationStore.subscribe((state) => persist(state.pendingBySessionId));

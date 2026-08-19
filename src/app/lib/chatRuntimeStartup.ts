@@ -127,7 +127,7 @@ async function startChatRuntime(
   setNotificationHandler(notificationHandler);
   setElicitationHandler(handleElicitationRequest);
   setElicitationCancellationHandler(() =>
-    useElicitationStore.getState().cancelAll(),
+    useElicitationStore.getState().detachAll(),
   );
   if (options.hydrateMessageQueues !== false) {
     const persistedMessageQueues = await loadPersistedMessageQueues();

@@ -78,6 +78,7 @@
     "recents": "Chats"
   },
   "status": {
+    "awaitingResponse": "Waiting for your answer",
     "chatActive": "Chat active",
     "pinnedChat": "Pinned chat",
     "unreadMessages": "Unread messages"

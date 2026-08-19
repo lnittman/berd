@@ -2,6 +2,7 @@ import {
   CreateElicitationRequest,
   type CreateElicitationResponse,
 } from "@agentclientprotocol/sdk";
+import { continueRecoveredElicitation } from "@/features/elicitation/lib/recoveredElicitationContinuation";
 import { useElicitationStore } from "@/features/elicitation/stores/elicitationStore";
 
 export function handleElicitationRequest(
@@ -11,7 +12,24 @@ export function handleElicitationRequest(
     return Promise.resolve({ action: "cancel" });
   }
 
-  return new Promise((resolve) => {
+  const response = new Promise<CreateElicitationResponse>((resolve) => {
     useElicitationStore.getState().enqueue({ request, resolve });
+  });
+
+  return response.then((result) => {
+    const goose = request._meta?.goose;
+    if (
+      goose != null &&
+      typeof goose === "object" &&
+      "continuation" in goose &&
+      goose.continuation === "prompt"
+    ) {
+      window.setTimeout(() => {
+        void continueRecoveredElicitation(request, result).catch((error) => {
+          console.error("Failed to continue recovered elicitation:", error);
+        });
+      }, 0);
+    }
+    return result;
   });
 }
