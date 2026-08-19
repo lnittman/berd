@@ -27,6 +27,7 @@ export interface PendingElicitation {
   recovered: boolean;
   continuation: ElicitationContinuation;
   resolve: ((response: CreateElicitationResponse) => void) | null;
+  responderKey: symbol | null;
 }
 
 interface ElicitationState {
@@ -34,7 +35,7 @@ interface ElicitationState {
   enqueue: (pending: {
     request: FormElicitationRequest;
     resolve: (response: CreateElicitationResponse) => void;
-  }) => void;
+  }) => symbol;
   setValue: (
     sessionId: string,
     key: string,
@@ -44,6 +45,8 @@ interface ElicitationState {
   accept: (sessionId: string) => void;
   decline: (sessionId: string) => void;
   cancel: (sessionId: string) => void;
+  discardDetached: (sessionId: string, id: string) => boolean;
+  abort: (sessionId: string, id: string, responderKey: symbol) => void;
   detachAll: (sessionId?: string) => void;
   cancelAll: (sessionId?: string) => void;
 }
@@ -87,6 +90,35 @@ export function getElicitationMetadata(request: FormElicitationRequest): {
   };
 }
 
+export function getOtherCompanionParent(
+  schema: ElicitationPropertySchema,
+): string | null {
+  const raw = schema as Record<string, unknown>;
+  const meta = asRecord(raw._meta);
+  const shared = asRecord(meta?._askUserQuestionCustomAnswer);
+  if (
+    shared?.isCustomAnswer === true &&
+    typeof shared.questionId === "string" &&
+    shared.questionId.length > 0
+  ) {
+    return shared.questionId;
+  }
+  const codex = asRecord(meta?.codex);
+  return codex?.isOtherAnswer === true &&
+    typeof codex.questionId === "string" &&
+    codex.questionId.length > 0
+    ? codex.questionId
+    : null;
+}
+
+export function isSecretElicitationProperty(
+  schema: ElicitationPropertySchema,
+): boolean {
+  const raw = schema as Record<string, unknown>;
+  const codex = asRecord(asRecord(raw._meta)?.codex);
+  return codex?.isSecret === true;
+}
+
 function isOtherCompanion(
   name: string,
   schema: ElicitationPropertySchema,
@@ -96,6 +128,7 @@ function isOtherCompanion(
   const codex = asRecord(meta?.codex);
   const title = typeof raw.title === "string" ? raw.title.toLowerCase() : "";
   return (
+    getOtherCompanionParent(schema) !== null ||
     codex?.isOtherAnswer === true ||
     ((name.endsWith("__other") || name.endsWith("_custom")) &&
       title === "other")
@@ -106,6 +139,11 @@ export function findOtherCompanion(
   properties: Record<string, ElicitationPropertySchema>,
   fieldName: string,
 ): [string, ElicitationPropertySchema] | null {
+  for (const [name, schema] of Object.entries(properties)) {
+    if (getOtherCompanionParent(schema) === fieldName) {
+      return [name, schema];
+    }
+  }
   for (const suffix of ["__other", "_custom"]) {
     const name = `${fieldName}${suffix}`;
     const schema = properties[name];
@@ -120,6 +158,8 @@ export function isOtherCompanionField(
 ): boolean {
   const schema = properties[fieldName];
   if (!schema || !isOtherCompanion(fieldName, schema)) return false;
+  const explicitParent = getOtherCompanionParent(schema);
+  if (explicitParent) return explicitParent in properties;
   return ["__other", "_custom"].some((suffix) => {
     if (!fieldName.endsWith(suffix)) return false;
     return fieldName.slice(0, -suffix.length) in properties;
@@ -133,6 +173,7 @@ function initialContent(
   for (const [name, schema] of Object.entries(
     request.requestedSchema.properties ?? {},
   )) {
+    if (isSecretElicitationProperty(schema)) continue;
     const value = (schema as Record<string, unknown>).default;
     if (
       typeof value === "string" ||
@@ -174,6 +215,12 @@ function normalizedContent(
   return content;
 }
 
+export function acceptedElicitationResponse(
+  pending: PendingElicitation,
+): CreateElicitationResponse {
+  return { action: "accept", content: normalizedContent(pending) };
+}
+
 function removeFirst(
   queues: Record<string, PendingElicitation[]>,
   sessionId: string,
@@ -183,6 +230,56 @@ function removeFirst(
   if (remaining.length) next[sessionId] = remaining;
   else delete next[sessionId];
   return next;
+}
+
+function removeById(
+  queues: Record<string, PendingElicitation[]>,
+  sessionId: string,
+  id: string,
+) {
+  const next = { ...queues };
+  const remaining = (next[sessionId] ?? []).filter(
+    (pending) => pending.id !== id,
+  );
+  if (remaining.length) next[sessionId] = remaining;
+  else delete next[sessionId];
+  return next;
+}
+
+function contentWithoutSecrets(
+  request: FormElicitationRequest,
+  content: Record<string, ElicitationContentValue>,
+): Record<string, ElicitationContentValue> {
+  const properties = request.requestedSchema.properties ?? {};
+  return Object.fromEntries(
+    Object.entries(content).filter(
+      ([name]) =>
+        !properties[name] || !isSecretElicitationProperty(properties[name]),
+    ),
+  );
+}
+
+function requestWithoutSecretDefaults(
+  request: FormElicitationRequest,
+): FormElicitationRequest {
+  const properties = request.requestedSchema.properties ?? {};
+  const sanitizedProperties = Object.fromEntries(
+    Object.entries(properties).map(([name, schema]) => {
+      if (!isSecretElicitationProperty(schema)) return [name, schema];
+      const { default: _default, ...sanitized } = schema as Record<
+        string,
+        unknown
+      >;
+      return [name, sanitized as ElicitationPropertySchema];
+    }),
+  );
+  return {
+    ...request,
+    requestedSchema: {
+      ...request.requestedSchema,
+      properties: sanitizedProperties,
+    },
+  };
 }
 
 function loadPersisted(): Record<string, PendingElicitation[]> {
@@ -208,14 +305,18 @@ function loadPersisted(): Record<string, PendingElicitation[]> {
         ) {
           return [];
         }
+        const loadedRequest = request as FormElicitationRequest;
         return [
           {
             id: item.id,
-            request: request as FormElicitationRequest,
-            content: (asRecord(item.content) ?? {}) as Record<
-              string,
-              ElicitationContentValue
-            >,
+            request: loadedRequest,
+            content: contentWithoutSecrets(
+              loadedRequest,
+              (asRecord(item.content) ?? {}) as Record<
+                string,
+                ElicitationContentValue
+              >,
+            ),
             step:
               typeof item.step === "number" && Number.isFinite(item.step)
                 ? Math.max(0, Math.floor(item.step))
@@ -224,6 +325,7 @@ function loadPersisted(): Record<string, PendingElicitation[]> {
             continuation:
               item.continuation === "prompt" ? "prompt" : "response",
             resolve: null,
+            responderKey: null,
           } satisfies PendingElicitation,
         ];
       });
@@ -241,7 +343,13 @@ function persist(queues: Record<string, PendingElicitation[]>): void {
     const serializable = Object.fromEntries(
       Object.entries(queues).map(([sessionId, queue]) => [
         sessionId,
-        queue.map(({ resolve: _resolve, ...pending }) => pending),
+        queue.map(
+          ({ resolve: _resolve, responderKey: _responderKey, ...pending }) => ({
+            ...pending,
+            request: requestWithoutSecretDefaults(pending.request),
+            content: contentWithoutSecrets(pending.request, pending.content),
+          }),
+        ),
       ]),
     );
     window.localStorage.setItem(
@@ -255,7 +363,8 @@ function persist(queues: Record<string, PendingElicitation[]>): void {
 
 export const useElicitationStore = create<ElicitationState>((set, get) => ({
   pendingBySessionId: loadPersisted(),
-  enqueue: ({ request, resolve }) =>
+  enqueue: ({ request, resolve }) => {
+    const responderKey = Symbol("elicitation-responder");
     set((state) => {
       const metadata = getElicitationMetadata(request);
       const queue = state.pendingBySessionId[request.sessionId] ?? [];
@@ -275,6 +384,7 @@ export const useElicitationStore = create<ElicitationState>((set, get) => ({
                     resolve(response);
                   }
                 : resolve,
+              responderKey,
             }
           : {
               id: metadata.id,
@@ -284,6 +394,7 @@ export const useElicitationStore = create<ElicitationState>((set, get) => ({
               recovered: metadata.recovered,
               continuation: metadata.continuation,
               resolve,
+              responderKey,
             };
       const nextQueue = [...queue];
       if (existingIndex >= 0) nextQueue[existingIndex] = pending;
@@ -294,7 +405,9 @@ export const useElicitationStore = create<ElicitationState>((set, get) => ({
           [request.sessionId]: nextQueue,
         },
       };
-    }),
+    });
+    return responderKey;
+  },
   setValue: (sessionId, key, value) =>
     set((state) => {
       const queue = state.pendingBySessionId[sessionId];
@@ -329,10 +442,7 @@ export const useElicitationStore = create<ElicitationState>((set, get) => ({
     set((state) => ({
       pendingBySessionId: removeFirst(state.pendingBySessionId, sessionId),
     }));
-    pending.resolve({
-      action: "accept",
-      content: normalizedContent(pending),
-    });
+    pending.resolve(acceptedElicitationResponse(pending));
   },
   decline: (sessionId) => {
     const pending = get().pendingBySessionId[sessionId]?.[0];
@@ -350,13 +460,37 @@ export const useElicitationStore = create<ElicitationState>((set, get) => ({
     }));
     pending.resolve?.({ action: "cancel" });
   },
+  discardDetached: (sessionId, id) => {
+    const pending = get().pendingBySessionId[sessionId]?.find(
+      (candidate) => candidate.id === id,
+    );
+    if (!pending || pending.resolve !== null) return false;
+    set((state) => ({
+      pendingBySessionId: removeById(state.pendingBySessionId, sessionId, id),
+    }));
+    return true;
+  },
+  abort: (sessionId, id, responderKey) => {
+    const pending = get().pendingBySessionId[sessionId]?.find(
+      (candidate) => candidate.id === id,
+    );
+    if (!pending || pending.responderKey !== responderKey) return;
+    set((state) => ({
+      pendingBySessionId: removeById(state.pendingBySessionId, sessionId, id),
+    }));
+    pending.resolve?.({ action: "cancel" });
+  },
   detachAll: (sessionId) =>
     set((state) => {
       const pendingBySessionId = Object.fromEntries(
         Object.entries(state.pendingBySessionId).map(([id, queue]) => [
           id,
           !sessionId || id === sessionId
-            ? queue.map((pending) => ({ ...pending, resolve: null }))
+            ? queue.map((pending) => ({
+                ...pending,
+                resolve: null,
+                responderKey: null,
+              }))
             : queue,
         ]),
       );

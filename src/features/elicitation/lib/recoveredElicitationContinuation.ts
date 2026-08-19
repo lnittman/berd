@@ -4,20 +4,24 @@ import { gooseServeSelectionFromExecutionTarget } from "@/features/chat/lib/goos
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import {
   type FormElicitationRequest,
+  getOtherCompanionParent,
   isOtherCompanionField,
+  isSecretElicitationProperty,
 } from "@/features/elicitation/stores/elicitationStore";
 
 function fieldLabel(request: FormElicitationRequest, name: string): string {
   const properties = request.requestedSchema.properties ?? {};
   let displayName = name;
   if (isOtherCompanionField(properties, name)) {
-    displayName = ["__other", "_custom"].reduce(
-      (candidate, suffix) =>
-        candidate.endsWith(suffix)
-          ? candidate.slice(0, -suffix.length)
-          : candidate,
-      name,
-    );
+    displayName =
+      getOtherCompanionParent(properties[name]) ??
+      ["__other", "_custom"].reduce(
+        (candidate, suffix) =>
+          candidate.endsWith(suffix)
+            ? candidate.slice(0, -suffix.length)
+            : candidate,
+        name,
+      );
   }
   const schema = properties[displayName] as Record<string, unknown> | undefined;
   return typeof schema?.title === "string" && schema.title.trim()
@@ -44,8 +48,11 @@ export function recoveredElicitationPrompt(
   }
   if (response.action !== "accept") return null;
 
-  const answers = Object.entries(response.content ?? {}).map(
-    ([name, value]) => `- ${fieldLabel(request, name)}: ${formatValue(value)}`,
+  const properties = request.requestedSchema.properties ?? {};
+  const answers = Object.entries(response.content ?? {}).map(([name, value]) =>
+    properties[name] && isSecretElicitationProperty(properties[name])
+      ? `- ${fieldLabel(request, name)}: [redacted]`
+      : `- ${fieldLabel(request, name)}: ${formatValue(value)}`,
   );
   return [
     "Berd recovered an interactive question after the previous agent connection restarted.",

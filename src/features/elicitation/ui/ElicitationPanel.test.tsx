@@ -1,12 +1,21 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CreateElicitationResponse } from "@agentclientprotocol/sdk";
 import {
   type FormElicitationRequest,
   useElicitationStore,
 } from "../stores/elicitationStore";
 import { ElicitationPanel } from "./ElicitationPanel";
+
+const mocks = vi.hoisted(() => ({
+  continueRecoveredElicitation: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../lib/recoveredElicitationContinuation", () => ({
+  continueRecoveredElicitation: (...args: unknown[]) =>
+    mocks.continueRecoveredElicitation(...args),
+}));
 
 function enqueue(
   request: FormElicitationRequest,
@@ -19,6 +28,8 @@ function enqueue(
 describe("ElicitationPanel", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    mocks.continueRecoveredElicitation.mockReset();
+    mocks.continueRecoveredElicitation.mockResolvedValue(undefined);
     useElicitationStore.setState({ pendingBySessionId: {} });
   });
 
@@ -522,7 +533,7 @@ describe("ElicitationPanel", () => {
     });
   });
 
-  it("keeps a detached draft editable and navigable while response actions wait", async () => {
+  it("keeps a detached draft editable and sends it as a normal message", async () => {
     const user = userEvent.setup();
     void enqueue({
       mode: "form",
@@ -551,12 +562,137 @@ describe("ElicitationPanel", () => {
     );
     expect(screen.getByRole("textbox", { name: "Second" })).toHaveValue("Two");
     expect(
-      screen.getByRole("button", { name: "Reconnecting…" }),
-    ).toBeDisabled();
+      screen.getByText(
+        "The agent is no longer waiting for this answer. You can send it as a message instead.",
+      ),
+    ).toBeVisible();
     expect(
-      screen.getByRole("button", { name: "Decline to answer" }),
-    ).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+      screen.queryByRole("button", { name: "Decline to answer" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Discard" })).toBeEnabled();
+
+    await user.click(
+      screen.getByRole("button", { name: "Send answers as message" }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.continueRecoveredElicitation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "session-1",
+          message: "Shape the recovery",
+        }),
+        {
+          action: "accept",
+          content: { first: "One", second: "Two" },
+        },
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        useElicitationStore.getState().pendingBySessionId["session-1"],
+      ).toBeUndefined(),
+    );
+  });
+
+  it("keeps a detached draft when sending it as a message fails", async () => {
+    const user = userEvent.setup();
+    mocks.continueRecoveredElicitation.mockRejectedValueOnce(
+      new Error("transport unavailable"),
+    );
+    void enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Keep this answer",
+      requestedSchema: {
+        type: "object",
+        properties: { note: { type: "string", title: "Note" } },
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+    act(() => useElicitationStore.getState().detachAll("session-1"));
+
+    await user.type(screen.getByRole("textbox", { name: "Note" }), "Draft");
+    await user.click(
+      screen.getByRole("button", { name: "Send answers as message" }),
+    );
+
+    expect(
+      await screen.findByText(
+        "That message couldn’t be sent. Your answers are still here.",
+      ),
+    ).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Note" })).toHaveValue("Draft");
+    expect(
+      useElicitationStore.getState().pendingBySessionId["session-1"],
+    ).toHaveLength(1);
+  });
+
+  it("promotes each real question above bridge boilerplate", () => {
+    void enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Please answer the following questions.",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          direction: {
+            type: "string",
+            title: "Direction",
+            description: "Which direction should we take?",
+          },
+          rationale: {
+            type: "string",
+            title: "Rationale",
+            description: "What makes that direction right?",
+          },
+        },
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+
+    expect(
+      screen.queryByText("Please answer the following questions."),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Question 1 of 2")).toBeVisible();
+    expect(screen.getByText("Direction")).toHaveClass("uppercase");
+    expect(screen.getByText("Which direction should we take?")).toHaveClass(
+      "font-display",
+      "text-base",
+    );
+  });
+
+  it("keeps secret answers transient while returning them to the live request", async () => {
+    const user = userEvent.setup();
+    const response = enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Enter the credential",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          token: {
+            type: "string",
+            title: "Access token",
+            _meta: { codex: { isSecret: true } },
+          },
+        },
+        required: ["token"],
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+
+    const input = screen.getByLabelText("Access token");
+    expect(input).toHaveAttribute("type", "password");
+    await user.type(input, "live-secret-value");
+    expect(
+      window.localStorage.getItem("berd:pending-elicitations:v1"),
+    ).not.toContain("live-secret-value");
+    await user.click(screen.getByRole("button", { name: "Submit" }));
+
+    await expect(response).resolves.toEqual({
+      action: "accept",
+      content: { token: "live-secret-value" },
+    });
   });
 
   it("records an explicit false boolean answer", async () => {

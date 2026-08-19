@@ -25,15 +25,30 @@ import {
   type ListSessionsResponse,
   type ResumeSessionRequest,
   type ResumeSessionResponse,
+  type CreateElicitationRequest,
+  type CreateElicitationResponse,
 } from "@agentclientprotocol/sdk";
 import { GooseExtClient } from "./generated/client.gen.js";
 import { createHttpStream } from "./http-stream.js";
+
+export type GooseClientCallbacks = Omit<
+  Client,
+  "unstable_createElicitation"
+> & {
+  unstable_createElicitation?: (
+    params: CreateElicitationRequest,
+    signal: AbortSignal,
+  ) => Promise<CreateElicitationResponse>;
+};
 
 export class GooseClient {
   private conn: ClientConnection;
   private ext: GooseExtClient;
 
-  constructor(toClient: () => Client, streamOrUrl: Stream | string) {
+  constructor(
+    toClient: () => GooseClientCallbacks,
+    streamOrUrl: Stream | string,
+  ) {
     const stream =
       typeof streamOrUrl === "string"
         ? createHttpStream(streamOrUrl)
@@ -48,8 +63,9 @@ export class GooseClient {
       );
     const createElicitation = callbacks.unstable_createElicitation;
     if (createElicitation) {
-      app = app.onRequest(methods.client.elicitation.create, ({ params }) =>
-        createElicitation(params),
+      app = app.onRequest(
+        methods.client.elicitation.create,
+        ({ params, signal }) => createElicitation(params, signal),
       );
     }
     this.conn = app.connect(stream);

@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CreateElicitationRequest } from "@agentclientprotocol/sdk";
+import {
+  RequestError,
+  type CreateElicitationRequest,
+} from "@agentclientprotocol/sdk";
 import { handleElicitationRequest } from "./elicitationRequestHandler";
 import { useElicitationStore } from "../stores/elicitationStore";
 
@@ -62,6 +65,79 @@ describe("handleElicitationRequest", () => {
         elicitationId: "auth-1",
       }),
     ).resolves.toEqual({ action: "cancel" });
+  });
+
+  it("cancels and removes a question when its ACP request is aborted", async () => {
+    const controller = new AbortController();
+    const response = handleElicitationRequest(request, controller.signal);
+    expect(
+      useElicitationStore.getState().pendingBySessionId["session-1"],
+    ).toHaveLength(1);
+
+    controller.abort(RequestError.requestCancelled());
+
+    await expect(response).resolves.toEqual({ action: "cancel" });
+    expect(
+      useElicitationStore.getState().pendingBySessionId["session-1"],
+    ).toBeUndefined();
+  });
+
+  it("does not let an old transport abort remove a reattached responder", async () => {
+    const firstController = new AbortController();
+    const first = handleElicitationRequest(
+      {
+        ...request,
+        _meta: { goose: { elicitationId: "question-1" } },
+      },
+      firstController.signal,
+    );
+    useElicitationStore.getState().detachAll("session-1");
+
+    const replay = handleElicitationRequest(
+      {
+        ...request,
+        _meta: {
+          goose: {
+            elicitationId: "question-1",
+            recovered: true,
+            continuation: "response",
+          },
+        },
+      },
+      new AbortController().signal,
+    );
+    firstController.abort(RequestError.requestCancelled());
+
+    expect(
+      useElicitationStore.getState().pendingBySessionId["session-1"],
+    ).toHaveLength(1);
+    useElicitationStore.getState().setValue("session-1", "direction", "local");
+    useElicitationStore.getState().accept("session-1");
+    await expect(replay).resolves.toEqual({
+      action: "accept",
+      content: { direction: "local" },
+    });
+
+    // The disconnected transport's responder is intentionally unreachable.
+    void first;
+  });
+
+  it("preserves a question when its request signal aborts with the connection", () => {
+    const controller = new AbortController();
+    const response = handleElicitationRequest(request, controller.signal);
+
+    controller.abort(new Error("ACP connection closed"));
+
+    expect(
+      useElicitationStore.getState().pendingBySessionId["session-1"],
+    ).toHaveLength(1);
+    useElicitationStore.getState().detachAll("session-1");
+    expect(
+      useElicitationStore.getState().pendingBySessionId["session-1"][0].resolve,
+    ).toBeNull();
+
+    // The disconnected transport's responder is intentionally unreachable.
+    void response;
   });
 
   it("resolves every pending request as cancelled on teardown", async () => {

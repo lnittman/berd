@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Check, CircleHelp } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
@@ -6,11 +6,18 @@ import {
   fieldIncomplete,
 } from "@/features/elicitation/lib/elicitationFieldValidation";
 import {
+  acceptedElicitationResponse,
   isOtherCompanionField,
   useElicitationStore,
 } from "@/features/elicitation/stores/elicitationStore";
+import { continueRecoveredElicitation } from "@/features/elicitation/lib/recoveredElicitationContinuation";
 import { ElicitationField } from "@/features/elicitation/ui/ElicitationField";
 import { Button } from "@/shared/ui/button";
+
+const BRIDGE_BOILERPLATE_MESSAGES = new Set([
+  "Input requested",
+  "Please answer the following questions.",
+]);
 
 export function useHasPendingElicitation(sessionId: string): boolean {
   return useElicitationStore(
@@ -24,6 +31,9 @@ export function ElicitationPanel({ sessionId }: { sessionId: string }) {
   const statusId = useId();
   const panelRef = useRef<HTMLFormElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const [detachedSubmission, setDetachedSubmission] = useState<
+    "idle" | "sending" | "error"
+  >("idle");
   const pending = useElicitationStore(
     (state) => state.pendingBySessionId[sessionId]?.[0] ?? null,
   );
@@ -32,7 +42,17 @@ export function ElicitationPanel({ sessionId }: { sessionId: string }) {
   const accept = useElicitationStore((state) => state.accept);
   const decline = useElicitationStore((state) => state.decline);
   const cancel = useElicitationStore((state) => state.cancel);
+  const discardDetached = useElicitationStore((state) => state.discardDetached);
   const pendingId = pending?.id ?? null;
+  const attached = pending?.resolve != null;
+  const pendingResponderKey =
+    pendingId === null
+      ? null
+      : `${pendingId}:${attached ? "attached" : "detached"}`;
+
+  useEffect(() => {
+    if (pendingResponderKey !== null) setDetachedSubmission("idle");
+  }, [pendingResponderKey]);
 
   useEffect(() => {
     const rememberIdleFocus = (event: FocusEvent) => {
@@ -102,8 +122,26 @@ export function ElicitationPanel({ sessionId }: { sessionId: string }) {
     ),
   );
   const last = step === fields.length - 1;
-  const attached = pending.resolve !== null;
+  const multipleQuestions = fields.length > 1;
+  const bridgeBoilerplate =
+    multipleQuestions &&
+    BRIDGE_BOILERPLATE_MESSAGES.has(pending.request.message.trim());
   const controlScope = `elicitation:${pending.id}`;
+
+  const sendDetachedAnswers = async () => {
+    if (attached || hasIncompleteRequiredField) return;
+    setDetachedSubmission("sending");
+    try {
+      await continueRecoveredElicitation(
+        pending.request,
+        acceptedElicitationResponse(pending),
+      );
+      discardDetached(sessionId, pending.id);
+    } catch (error) {
+      console.error("Failed to send detached elicitation answers:", error);
+      setDetachedSubmission("error");
+    }
+  };
 
   const submitCurrentStep = () => {
     if (incomplete) return;
@@ -111,7 +149,9 @@ export function ElicitationPanel({ sessionId }: { sessionId: string }) {
       setStep(sessionId, step + 1);
       return;
     }
-    if (attached && !hasIncompleteRequiredField) accept(sessionId);
+    if (hasIncompleteRequiredField) return;
+    if (attached) accept(sessionId);
+    else void sendDetachedAnswers();
   };
 
   return (
@@ -137,30 +177,50 @@ export function ElicitationPanel({ sessionId }: { sessionId: string }) {
               {t("elicitation.recoveredQuestion")}
             </p>
           ) : null}
-          <h2 id={titleId} className="font-display font-semibold text-base">
-            {pending.request.message}
-          </h2>
-          <p
+          {multipleQuestions ? (
+            <p
+              id={titleId}
+              className="font-medium text-muted-foreground text-xs uppercase tracking-wide"
+            >
+              {t("elicitation.questionProgress", {
+                current: step + 1,
+                total: fields.length,
+              })}
+            </p>
+          ) : (
+            <h2 id={titleId} className="font-display font-semibold text-base">
+              {pending.request.message}
+            </h2>
+          )}
+          {multipleQuestions && !bridgeBoilerplate ? (
+            <p className="mt-1 text-muted-foreground text-sm">
+              {pending.request.message}
+            </p>
+          ) : null}
+          <div
             id={statusId}
-            className="mt-1 text-muted-foreground text-xs"
+            className="mt-1 space-y-1 text-muted-foreground text-xs"
             role="status"
             aria-live="polite"
             aria-atomic="true"
           >
-            {fields.length > 1
-              ? t("elicitation.questionProgress", {
-                  current: step + 1,
-                  total: fields.length,
-                })
-              : fields.length === 0
-                ? t("elicitation.reviewAndSubmit")
-                : null}
-            {pending.recovered
-              ? pending.continuation === "prompt"
-                ? `${fields.length > 1 ? " · " : ""}${t("elicitation.continuesAfterRestart")}`
-                : `${fields.length > 1 ? " · " : ""}${t("elicitation.reconnected")}`
-              : ""}
-          </p>
+            {fields.length === 0 ? (
+              <p>{t("elicitation.reviewAndSubmit")}</p>
+            ) : null}
+            {pending.recovered ? (
+              <p>
+                {pending.continuation === "prompt"
+                  ? t("elicitation.continuesAfterRestart")
+                  : t("elicitation.reconnected")}
+              </p>
+            ) : null}
+            {!attached ? <p>{t("elicitation.detachedDescription")}</p> : null}
+            {detachedSubmission === "error" ? (
+              <p className="text-destructive" role="alert">
+                {t("elicitation.sendAsMessageError")}
+              </p>
+            ) : null}
+          </div>
         </div>
         <Button
           type="button"
@@ -170,7 +230,7 @@ export function ElicitationPanel({ sessionId }: { sessionId: string }) {
           onClick={() => cancel(sessionId)}
           className="shrink-0"
         >
-          {t("elicitation.cancel")}
+          {t(attached ? "elicitation.cancel" : "elicitation.discard")}
         </Button>
       </div>
 
@@ -222,18 +282,9 @@ export function ElicitationPanel({ sessionId }: { sessionId: string }) {
           content={pending.content}
           controlScope={controlScope}
           required={required}
+          promoteDescription={multipleQuestions}
           onChange={(key, next) => setValue(sessionId, key, next)}
         />
-      ) : null}
-
-      {!attached ? (
-        <p
-          className="mt-4 text-muted-foreground text-xs"
-          role="status"
-          aria-live="polite"
-        >
-          {t("elicitation.reconnectingDescription")}
-        </p>
       ) : null}
 
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-border border-t pt-3">
@@ -248,28 +299,31 @@ export function ElicitationPanel({ sessionId }: { sessionId: string }) {
               {t("elicitation.back")}
             </Button>
           ) : null}
-          <Button
-            type="button"
-            variant="ghost"
-            flush
-            disabled={!attached}
-            onClick={() => decline(sessionId)}
-          >
-            {t("elicitation.decline")}
-          </Button>
+          {attached ? (
+            <Button
+              type="button"
+              variant="ghost"
+              flush
+              onClick={() => decline(sessionId)}
+            >
+              {t("elicitation.decline")}
+            </Button>
+          ) : null}
         </div>
         <Button
           type="submit"
           disabled={
             Boolean(incomplete) ||
-            ((last || fields.length === 0) &&
-              (!attached || hasIncompleteRequiredField))
+            detachedSubmission === "sending" ||
+            ((last || fields.length === 0) && hasIncompleteRequiredField)
           }
         >
           {last || fields.length === 0
             ? attached
               ? t("elicitation.submit")
-              : t("elicitation.reconnecting")
+              : detachedSubmission === "sending"
+                ? t("elicitation.sendingAsMessage")
+                : t("elicitation.sendAsMessage")
             : t("elicitation.next")}
         </Button>
       </div>

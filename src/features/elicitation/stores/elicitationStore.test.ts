@@ -92,6 +92,45 @@ describe("elicitationStore", () => {
     });
   });
 
+  it("uses the shared custom-answer marker even when the field name has no known suffix", async () => {
+    const sharedMarkerRequest = {
+      ...request,
+      requestedSchema: {
+        ...request.requestedSchema,
+        properties: {
+          direction: request.requestedSchema.properties.direction,
+          bespokeAnswer: {
+            type: "string",
+            title: "Other",
+            _meta: {
+              _askUserQuestionCustomAnswer: {
+                questionId: "direction",
+                isCustomAnswer: true,
+              },
+            },
+          },
+        },
+      },
+    } satisfies FormElicitationRequest;
+    const response = enqueue(sharedMarkerRequest);
+
+    expect(
+      isOtherCompanionField(
+        sharedMarkerRequest.requestedSchema.properties,
+        "bespokeAnswer",
+      ),
+    ).toBe(true);
+    const store = useElicitationStore.getState();
+    store.setValue("session-1", "direction", "local");
+    store.setValue("session-1", "bespokeAnswer", "A third path");
+    store.accept("session-1");
+
+    await expect(response).resolves.toEqual({
+      action: "accept",
+      content: { bespokeAnswer: "A third path" },
+    });
+  });
+
   it("persists drafts without serializing the live resolver", () => {
     void enqueue();
     useElicitationStore
@@ -103,6 +142,39 @@ describe("elicitationStore", () => {
     );
     expect(persisted).toContain("survive restart");
     expect(persisted).not.toContain("resolve");
+  });
+
+  it("never persists secret defaults or live secret answers", () => {
+    const secretRequest = {
+      ...request,
+      requestedSchema: {
+        type: "object",
+        properties: {
+          token: {
+            type: "string",
+            title: "Access token",
+            default: "schema-secret-value",
+            _meta: { codex: { isSecret: true } },
+          },
+          note: { type: "string", title: "Note" },
+        },
+      },
+    } satisfies FormElicitationRequest;
+    void enqueue(secretRequest);
+    const store = useElicitationStore.getState();
+
+    expect(store.pendingBySessionId["session-1"][0].content).not.toHaveProperty(
+      "token",
+    );
+    store.setValue("session-1", "token", "live-secret-value");
+    store.setValue("session-1", "note", "safe draft");
+
+    const persisted = window.localStorage.getItem(
+      "berd:pending-elicitations:v1",
+    );
+    expect(persisted).toContain("safe draft");
+    expect(persisted).not.toContain("schema-secret-value");
+    expect(persisted).not.toContain("live-secret-value");
   });
 
   it("uses the ACP tool call id to keep otherwise identical questions distinct", () => {
@@ -125,6 +197,19 @@ describe("elicitationStore", () => {
     expect(
       useElicitationStore.getState().pendingBySessionId["session-1"],
     ).toBeUndefined();
+  });
+
+  it("does not discard a detached answer after its responder reattaches", () => {
+    void enqueue();
+    const store = useElicitationStore.getState();
+    store.detachAll("session-1");
+    void enqueue();
+
+    expect(store.discardDetached("session-1", "question-1")).toBe(false);
+    expect(
+      useElicitationStore.getState().pendingBySessionId["session-1"]?.[0]
+        ?.resolve,
+    ).not.toBeNull();
   });
 
   it("keeps decline distinct from cancel", async () => {

@@ -43,4 +43,56 @@ describe("recoveredElicitationPrompt", () => {
       }),
     ).toContain("- Direction: A third way");
   });
+
+  it("uses shared custom-answer metadata when the companion name has no suffix", () => {
+    const markedRequest = {
+      ...request,
+      requestedSchema: {
+        ...request.requestedSchema,
+        properties: {
+          direction: { type: "string", title: "Direction" },
+          bespokeAnswer: {
+            type: "string",
+            title: "Other",
+            _meta: {
+              _askUserQuestionCustomAnswer: {
+                questionId: "direction",
+                isCustomAnswer: true,
+              },
+            },
+          },
+        },
+      },
+    } satisfies FormElicitationRequest;
+
+    expect(
+      recoveredElicitationPrompt(markedRequest, {
+        action: "accept",
+        content: { bespokeAnswer: "A fourth way" },
+      }),
+    ).toContain("- Direction: A fourth way");
+  });
+
+  it("redacts secret answers from prose recovery", () => {
+    const secretRequest = {
+      ...request,
+      requestedSchema: {
+        type: "object",
+        properties: {
+          token: {
+            type: "string",
+            title: "Access token",
+            _meta: { codex: { isSecret: true } },
+          },
+        },
+      },
+    } satisfies FormElicitationRequest;
+    const prompt = recoveredElicitationPrompt(secretRequest, {
+      action: "accept",
+      content: { token: "do-not-echo-this" },
+    });
+
+    expect(prompt).toContain("- Access token: [redacted]");
+    expect(prompt).not.toContain("do-not-echo-this");
+  });
 });

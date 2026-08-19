@@ -5,7 +5,10 @@ import type {
   ElicitationPropertySchema,
 } from "@agentclientprotocol/sdk";
 import { useTranslation } from "react-i18next";
-import { findOtherCompanion } from "@/features/elicitation/stores/elicitationStore";
+import {
+  findOtherCompanion,
+  isSecretElicitationProperty,
+} from "@/features/elicitation/stores/elicitationStore";
 import { cn } from "@/shared/lib/cn";
 import { Checkbox } from "@/shared/ui/checkbox";
 import { Input } from "@/shared/ui/input";
@@ -21,6 +24,7 @@ interface ElicitationFieldProps {
   content: Record<string, ElicitationContentValue>;
   controlScope: string;
   required: boolean;
+  promoteDescription?: boolean;
   onChange: (key: string, value: ElicitationContentValue | undefined) => void;
 }
 
@@ -108,13 +112,17 @@ function MultiSelectField({
   controlScope,
   onChange,
   fieldId,
+  promoteDescription,
 }: ConcreteFieldProps) {
   const { t } = useTranslation("chat");
   const raw = schema as Record<string, unknown>;
-  const title = typeof raw.title === "string" ? raw.title : name;
+  const explicitTitle = typeof raw.title === "string" ? raw.title : null;
+  const title = explicitTitle ?? name;
   const description =
     typeof raw.description === "string" ? raw.description : null;
-  const descriptionId = description ? `${fieldId}-description` : undefined;
+  const promotedDescription = promoteDescription ? description : null;
+  const descriptionId =
+    description && !promotedDescription ? `${fieldId}-description` : undefined;
   const options = multiSelectOptions(schema);
   const value = content[name];
   const selected = Array.isArray(value) ? value : [];
@@ -128,6 +136,9 @@ function MultiSelectField({
   const companion = findOtherCompanion(properties, name);
   const companionName = companion?.[0];
   const companionSchema = companion?.[1] as Record<string, unknown> | undefined;
+  const companionSecret = companion
+    ? isSecretElicitationProperty(companion[1])
+    : false;
   const explicitOtherOption = companionName
     ? options.find(isOtherOption)
     : undefined;
@@ -161,8 +172,27 @@ function MultiSelectField({
       className="space-y-2"
       aria-describedby={fieldDescriptionIds || undefined}
     >
-      <legend className="font-medium text-sm">{title}</legend>
-      {description ? (
+      <legend
+        className={cn(
+          promotedDescription ? "space-y-1" : "font-medium text-sm",
+        )}
+      >
+        {promotedDescription ? (
+          <>
+            {explicitTitle ? (
+              <span className="block font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                {explicitTitle}
+              </span>
+            ) : null}
+            <span className="block font-display font-semibold text-base">
+              {promotedDescription}
+            </span>
+          </>
+        ) : (
+          title
+        )}
+      </legend>
+      {description && !promotedDescription ? (
         <p id={descriptionId} className="text-muted-foreground text-xs">
           {description}
         </p>
@@ -266,9 +296,10 @@ function MultiSelectField({
             </Label>
             {otherSelected ? (
               <Input
-                type="text"
+                type={companionSecret ? "password" : "text"}
                 name={`${controlScope}:${companionName}`}
                 autoComplete="off"
+                spellCheck={companionSecret ? false : undefined}
                 autoFocus
                 aria-label={t("elicitation.otherAnswerLabel", { title })}
                 aria-describedby={otherDescriptionId}
@@ -312,18 +343,25 @@ function SingleSelectField({
   required,
   onChange,
   fieldId,
+  promoteDescription,
 }: ConcreteFieldProps) {
   const { t } = useTranslation("chat");
   const raw = schema as Record<string, unknown>;
-  const title = typeof raw.title === "string" ? raw.title : name;
+  const explicitTitle = typeof raw.title === "string" ? raw.title : null;
+  const title = explicitTitle ?? name;
   const description =
     typeof raw.description === "string" ? raw.description : null;
-  const descriptionId = description ? `${fieldId}-description` : undefined;
+  const promotedDescription = promoteDescription ? description : null;
+  const descriptionId =
+    description && !promotedDescription ? `${fieldId}-description` : undefined;
   const options = singleSelectOptions(schema);
   const value = content[name];
   const companion = findOtherCompanion(properties, name);
   const companionName = companion?.[0];
   const companionSchema = companion?.[1] as Record<string, unknown> | undefined;
+  const companionSecret = companion
+    ? isSecretElicitationProperty(companion[1])
+    : false;
   const otherValue = companionName ? content[companionName] : undefined;
   const explicitOtherOption = companionName
     ? options.find(isOtherOption)
@@ -355,10 +393,28 @@ function SingleSelectField({
 
   return (
     <fieldset className="space-y-2" aria-describedby={descriptionId}>
-      <legend id={`${fieldId}-title`} className="font-medium text-sm">
-        {title}
+      <legend
+        id={`${fieldId}-title`}
+        className={cn(
+          promotedDescription ? "space-y-1" : "font-medium text-sm",
+        )}
+      >
+        {promotedDescription ? (
+          <>
+            {explicitTitle ? (
+              <span className="block font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                {explicitTitle}
+              </span>
+            ) : null}
+            <span className="block font-display font-semibold text-base">
+              {promotedDescription}
+            </span>
+          </>
+        ) : (
+          title
+        )}
       </legend>
-      {description ? (
+      {description && !promotedDescription ? (
         <p id={descriptionId} className="text-muted-foreground text-xs">
           {description}
         </p>
@@ -439,9 +495,10 @@ function SingleSelectField({
             ) : null}
             {otherSelected ? (
               <Input
-                type="text"
+                type={companionSecret ? "password" : "text"}
                 name={`${controlScope}:${companionName}`}
                 autoComplete="off"
+                spellCheck={companionSecret ? false : undefined}
                 autoFocus
                 aria-label={t("elicitation.otherAnswerLabel", { title })}
                 aria-describedby={otherDescriptionId}
@@ -484,21 +541,43 @@ function BooleanField({
   required,
   onChange,
   fieldId,
+  promoteDescription,
 }: ConcreteFieldProps) {
   const { t } = useTranslation("chat");
   const raw = schema as Record<string, unknown>;
-  const title = typeof raw.title === "string" ? raw.title : name;
+  const explicitTitle = typeof raw.title === "string" ? raw.title : null;
+  const title = explicitTitle ?? name;
   const description =
     typeof raw.description === "string" ? raw.description : null;
-  const descriptionId = description ? `${fieldId}-description` : undefined;
+  const promotedDescription = promoteDescription ? description : null;
+  const descriptionId =
+    description && !promotedDescription ? `${fieldId}-description` : undefined;
   const value = content[name];
 
   return (
     <fieldset className="space-y-2" aria-describedby={descriptionId}>
-      <legend id={`${fieldId}-title`} className="font-medium text-sm">
-        {title}
+      <legend
+        id={`${fieldId}-title`}
+        className={cn(
+          promotedDescription ? "space-y-1" : "font-medium text-sm",
+        )}
+      >
+        {promotedDescription ? (
+          <>
+            {explicitTitle ? (
+              <span className="block font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                {explicitTitle}
+              </span>
+            ) : null}
+            <span className="block font-display font-semibold text-base">
+              {promotedDescription}
+            </span>
+          </>
+        ) : (
+          title
+        )}
       </legend>
-      {description ? (
+      {description && !promotedDescription ? (
         <p id={descriptionId} className="text-muted-foreground text-xs">
           {description}
         </p>
@@ -542,21 +621,45 @@ function ScalarField({
   required,
   onChange,
   fieldId,
+  promoteDescription,
 }: ConcreteFieldProps) {
   const raw = schema as Record<string, unknown>;
-  const title = typeof raw.title === "string" ? raw.title : name;
+  const explicitTitle = typeof raw.title === "string" ? raw.title : null;
+  const title = explicitTitle ?? name;
   const description =
     typeof raw.description === "string" ? raw.description : null;
-  const descriptionId = description ? `${fieldId}-description` : undefined;
+  const promotedDescription = promoteDescription ? description : null;
+  const descriptionId =
+    description && !promotedDescription ? `${fieldId}-description` : undefined;
   const value = content[name];
   const numeric = schema.type === "number" || schema.type === "integer";
+  const secret = isSecretElicitationProperty(schema);
 
   return (
     <div className="space-y-2 text-sm">
-      <Label htmlFor={fieldId} className="font-medium">
-        {title}
+      <Label
+        htmlFor={fieldId}
+        className={cn(
+          "block",
+          promotedDescription ? "space-y-1" : "font-medium",
+        )}
+      >
+        {promotedDescription ? (
+          <>
+            {explicitTitle ? (
+              <span className="block font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                {explicitTitle}
+              </span>
+            ) : null}
+            <span className="block font-display font-semibold text-base">
+              {promotedDescription}
+            </span>
+          </>
+        ) : (
+          title
+        )}
       </Label>
-      {description ? (
+      {description && !promotedDescription ? (
         <p id={descriptionId} className="text-muted-foreground text-xs">
           {description}
         </p>
@@ -564,8 +667,9 @@ function ScalarField({
       <Input
         id={fieldId}
         name={`${controlScope}:${name}`}
-        type={numeric ? "number" : "text"}
+        type={secret ? "password" : numeric ? "number" : "text"}
         autoComplete="off"
+        spellCheck={secret ? false : undefined}
         aria-describedby={descriptionId}
         required={required}
         min={typeof raw.minimum === "number" ? raw.minimum : undefined}

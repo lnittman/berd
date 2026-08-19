@@ -2,11 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   DEFAULT_GOOSE_MCP_HOST_CAPABILITIES,
   GooseClient,
+  type GooseClientCallbacks,
   type GooseInitializeRequest,
 } from "@aaif/goose-sdk";
 import {
   PROTOCOL_VERSION,
-  type Client,
   type SessionNotification,
   type RequestPermissionRequest,
   type RequestPermissionResponse,
@@ -62,6 +62,7 @@ export function setPermissionHandler(handler: PermissionRequestHandler): void {
 
 export type ElicitationRequestHandler = (
   request: CreateElicitationRequest,
+  signal?: AbortSignal,
 ) => Promise<CreateElicitationResponse>;
 let elicitationHandler: ElicitationRequestHandler | null = null;
 let elicitationCancellationHandler: (() => void) | null = null;
@@ -78,7 +79,7 @@ let clientPromise: Promise<GooseClient> | null = null;
 let resolvedClient: GooseClient | null = null;
 let activeStream: ReturnType<typeof createWebSocketStream> | null = null;
 
-function createClientCallbacks(): () => Client {
+function createClientCallbacks(): () => GooseClientCallbacks {
   return () => ({
     requestPermission: async (
       args: RequestPermissionRequest,
@@ -105,8 +106,10 @@ function createClientCallbacks(): () => Client {
         await notificationHandler.handleSessionNotification(notification);
       }
     },
-    unstable_createElicitation: async (request: CreateElicitationRequest) =>
-      elicitationHandler?.(request) ?? { action: "cancel" },
+    unstable_createElicitation: async (
+      request: CreateElicitationRequest,
+      signal: AbortSignal,
+    ) => elicitationHandler?.(request, signal) ?? { action: "cancel" },
   });
 }
 
