@@ -59,6 +59,7 @@ import {
 import { useTerminalFallbackCwdPreference } from "@/features/terminal/lib/terminalCwdPreference";
 import { ActiveChatBerdIndicator } from "@/shared/ui/SessionActivityIndicator";
 import { getTextContent } from "@/shared/types/messages";
+import { createLocalUserMessage } from "@/features/chat/lib/localUserMessage";
 import { getConversationBeforeForMessageFork } from "@/features/sessions/lib/sessionFork";
 import type { ForkSessionHandler } from "@/features/sessions/hooks/useForkSession";
 import { eventMatchesShortcutCommand } from "@/features/shortcuts/lib/shortcutRegistry";
@@ -573,16 +574,11 @@ export function ChatView({
   const onTimelineChangeFolder =
     !isReadOnly && changeFolderSessionId ? handleChangeFolder : undefined;
 
-  const showIndicator =
+  const hasActiveResponse =
     controller.chatState === "thinking" ||
     controller.chatState === "streaming" ||
     controller.chatState === "waiting" ||
     controller.chatState === "compacting";
-  const loadingChatState = controller.chatState as
-    | "thinking"
-    | "streaming"
-    | "waiting"
-    | "compacting";
   const chatInputControls = useMemo<ChatInputControls | undefined>(() => {
     if (isReadOnly) {
       return {
@@ -619,10 +615,67 @@ export function ChatView({
       : shouldStageTranscript;
   const showTimelineLoading =
     controller.isLoadingHistory || isPreparingInitialTranscript;
-  const shouldShowLoadingIndicator = showIndicator && !showTimelineLoading;
-  const timelineMessages = isPreparingInitialTranscript
+  const committedTimelineMessages = isPreparingInitialTranscript
     ? []
     : controller.messages;
+  const dispatchingQueuedRecord =
+    controller.queue.queuedRecords?.find(
+      (record) =>
+        record.kind === "transport-ready" &&
+        record.recordId === controller.queue.dispatchingRecordId,
+    ) ?? null;
+  const dispatchingMessageCommitted = Boolean(
+    dispatchingQueuedRecord &&
+      controller.messages.some(
+        (message) =>
+          message.metadata?.queueRecordId === dispatchingQueuedRecord.recordId,
+      ),
+  );
+  const optimisticQueuedMessage = useMemo(() => {
+    if (!dispatchingQueuedRecord || dispatchingMessageCommitted) return null;
+    const { payload, recordId } = dispatchingQueuedRecord;
+    const persona =
+      payload.persona.kind === "persona"
+        ? { id: payload.persona.id, name: payload.persona.name }
+        : payload.persona.kind === "inherit" && controller.selectedPersona
+          ? {
+              id: controller.selectedPersona.id,
+              name: controller.selectedPersona.displayName,
+            }
+          : undefined;
+    return createLocalUserMessage(payload.text, {
+      id: `queued:${recordId}`,
+      displayText: payload.sendOptions?.displayText,
+      attachments: payload.attachments,
+      chips: payload.sendOptions?.chips,
+      persona,
+      metadata: {
+        ...payload.sendOptions?.userMessageMetadata,
+        queueRecordId: recordId,
+      },
+    });
+  }, [
+    controller.selectedPersona,
+    dispatchingMessageCommitted,
+    dispatchingQueuedRecord,
+  ]);
+  const timelineMessages = useMemo(
+    () =>
+      optimisticQueuedMessage
+        ? [...committedTimelineMessages, optimisticQueuedMessage]
+        : committedTimelineMessages,
+    [committedTimelineMessages, optimisticQueuedMessage],
+  );
+  const shouldShowLoadingIndicator =
+    (hasActiveResponse || optimisticQueuedMessage !== null) &&
+    !showTimelineLoading;
+  const loadingChatState = hasActiveResponse
+    ? (controller.chatState as
+        | "thinking"
+        | "streaming"
+        | "waiting"
+        | "compacting")
+    : "thinking";
   const suppressEmptyConversationPlaceholder =
     composerHandoffInProgress || controller.queue.queuedMessage !== null;
   const handleForkFromMessage = useCallback(
@@ -744,6 +797,19 @@ export function ChatView({
   const deferredWorkspaceStartup = summarizeProjectWorkspaceStartup(
     workspaceSetup?.desired ?? [],
   );
+  const composerQueuedRecords = (
+    controller.queue.queuedRecords ??
+    (controller.queue.queuedRecord ? [controller.queue.queuedRecord] : [])
+  ).filter(
+    (record) => record.recordId !== controller.queue.dispatchingRecordId,
+  );
+  const composerQueuedMessage =
+    controller.queue.queuedRecord?.recordId ===
+    controller.queue.dispatchingRecordId
+      ? null
+      : (controller.queue.queuedMessage ??
+        controller.deferredWorkspaceRecord?.payload ??
+        null);
 
   const composerFooter = (
     <div className="px-[var(--spacing-app-panel-gutter-inline)] pb-[var(--spacing-app-panel-gutter-inline)]">
@@ -801,8 +867,13 @@ export function ChatView({
                 options,
               ),
             canSteerMessage: controller.canSteerMessage,
-            onSteerQueuedMessage: controller.steerQueuedMessage,
-            canSteerQueuedMessage: controller.canSteerQueuedMessage,
+            onSteerQueuedMessage:
+              controller.queue.dispatchingRecordId == null
+                ? controller.steerQueuedMessage
+                : undefined,
+            canSteerQueuedMessage:
+              controller.queue.dispatchingRecordId == null &&
+              controller.canSteerQueuedMessage,
             disabled:
               isReadOnly ||
               controller.projectMetadataPending ||
@@ -815,17 +886,10 @@ export function ChatView({
             sendDisabledReason,
             queuedMessage: composerHandoffInProgress
               ? null
-              : (controller.queue.queuedMessage ??
-                controller.deferredWorkspaceRecord?.payload ??
-                null),
+              : composerQueuedMessage,
             queuedMessages: composerHandoffInProgress
               ? []
-              : (
-                  controller.queue.queuedRecords ??
-                  (controller.queue.queuedRecord
-                    ? [controller.queue.queuedRecord]
-                    : [])
-                ).map((record) => ({
+              : composerQueuedRecords.map((record) => ({
                   recordId: record.recordId,
                   payload: record.payload,
                 })),

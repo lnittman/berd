@@ -62,4 +62,29 @@ describe("dispatchPrompt pre-commit rejection", () => {
       newerOwnerRuntime,
     );
   });
+
+  it("keeps the optimistic queue identity when the user turn commits", async () => {
+    mocks.acpSendMessage.mockImplementationOnce(
+      (
+        _sessionId: string,
+        _prompt: string,
+        options: { onPromptDispatching(): void },
+      ) => {
+        options.onPromptDispatching();
+        return Promise.resolve();
+      },
+    );
+
+    await dispatchPrompt("session-1", "Instant hello", {
+      userMessageMetadata: { queueRecordId: "record-1" },
+    });
+
+    expect(
+      useChatStore.getState().messagesBySession["session-1"]?.[0],
+    ).toMatchObject({
+      id: "queued:record-1",
+      role: "user",
+      metadata: { queueRecordId: "record-1" },
+    });
+  });
 });
