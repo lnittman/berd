@@ -177,6 +177,110 @@ describe("elicitationStore", () => {
     expect(persisted).not.toContain("live-secret-value");
   });
 
+  it("revalidates a detached draft against a replayed request schema", async () => {
+    void enqueue();
+    const store = useElicitationStore.getState();
+    store.setValue("session-1", "direction", "local");
+    store.setValue("session-1", "surfaces", ["desktop", "cli"]);
+    store.setValue("session-1", "notes", "previously safe");
+    store.detachAll("session-1");
+
+    const replayedRequest = {
+      ...request,
+      requestedSchema: {
+        type: "object",
+        properties: {
+          direction: {
+            type: "string",
+            title: "Direction",
+            enum: ["upstream"],
+          },
+          surfaces: {
+            type: "array",
+            title: "Surfaces",
+            items: { enum: ["cli"] },
+          },
+          notes: {
+            type: "string",
+            title: "Notes",
+            _meta: { codex: { isSecret: true } },
+          },
+          confirmation: {
+            type: "string",
+            title: "Confirmation",
+            default: "current request",
+          },
+        },
+      },
+    } satisfies FormElicitationRequest;
+    const response = enqueue(replayedRequest);
+
+    expect(
+      useElicitationStore.getState().pendingBySessionId["session-1"][0].content,
+    ).toEqual({ surfaces: ["cli"], confirmation: "current request" });
+
+    useElicitationStore
+      .getState()
+      .setValue("session-1", "notes", "fresh secret");
+    useElicitationStore.getState().accept("session-1");
+
+    await expect(response).resolves.toEqual({
+      action: "accept",
+      content: {
+        surfaces: ["cli"],
+        notes: "fresh secret",
+        confirmation: "current request",
+      },
+    });
+  });
+
+  it("never carries a secret answer into a replayed non-secret field", async () => {
+    const secretFirstRequest = {
+      ...request,
+      requestedSchema: {
+        type: "object",
+        properties: {
+          notes: {
+            type: "string",
+            title: "Notes",
+            _meta: { codex: { isSecret: true } },
+          },
+        },
+      },
+    } satisfies FormElicitationRequest;
+    void enqueue(secretFirstRequest);
+    const store = useElicitationStore.getState();
+    store.setValue("session-1", "notes", "do not replay");
+    store.detachAll("session-1");
+
+    const response = enqueue({
+      ...secretFirstRequest,
+      requestedSchema: {
+        type: "object",
+        properties: { notes: { type: "string", title: "Notes" } },
+      },
+    });
+
+    expect(
+      useElicitationStore.getState().pendingBySessionId["session-1"][0].content,
+    ).toEqual({});
+    useElicitationStore.getState().cancel("session-1");
+    await expect(response).resolves.toEqual({ action: "cancel" });
+  });
+
+  it("never submits unknown or type-incompatible content", async () => {
+    const response = enqueue();
+    const store = useElicitationStore.getState();
+    store.setValue("session-1", "notes", true);
+    store.setValue("session-1", "removed-field", "stale answer");
+    store.accept("session-1");
+
+    await expect(response).resolves.toEqual({
+      action: "accept",
+      content: {},
+    });
+  });
+
   it("uses the ACP tool call id to keep otherwise identical questions distinct", () => {
     void enqueue({ ...request, _meta: undefined, toolCallId: "tool-call-1" });
     void enqueue({ ...request, _meta: undefined, toolCallId: "tool-call-2" });

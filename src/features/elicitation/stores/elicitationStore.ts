@@ -187,12 +187,87 @@ function initialContent(
   return content;
 }
 
+function allowedStringValues(
+  schema: Record<string, unknown>,
+  optionsKey: "oneOf" | "anyOf",
+): Set<string> | null {
+  if (Array.isArray(schema.enum)) {
+    return new Set(
+      schema.enum.filter((value): value is string => typeof value === "string"),
+    );
+  }
+  const options = schema[optionsKey];
+  if (!Array.isArray(options)) return null;
+  return new Set(
+    options.flatMap((option) => {
+      const raw = asRecord(option);
+      return typeof raw?.const === "string" ? [raw.const] : [];
+    }),
+  );
+}
+
+function contentForRequest(
+  request: FormElicitationRequest,
+  content: Record<string, ElicitationContentValue>,
+  includeSecrets: boolean,
+): Record<string, ElicitationContentValue> {
+  const properties = request.requestedSchema.properties ?? {};
+  const next: Record<string, ElicitationContentValue> = {};
+  for (const [name, value] of Object.entries(content)) {
+    const schema = properties[name];
+    if (!schema || (!includeSecrets && isSecretElicitationProperty(schema))) {
+      continue;
+    }
+
+    const raw = schema as Record<string, unknown>;
+    if (schema.type === "string") {
+      if (typeof value !== "string") continue;
+      const allowed = allowedStringValues(raw, "oneOf");
+      if (!allowed || allowed.has(value)) next[name] = value;
+      continue;
+    }
+    if (schema.type === "number") {
+      if (typeof value === "number" && Number.isFinite(value)) {
+        next[name] = value;
+      }
+      continue;
+    }
+    if (schema.type === "integer") {
+      if (typeof value === "number" && Number.isInteger(value)) {
+        next[name] = value;
+      }
+      continue;
+    }
+    if (schema.type === "boolean") {
+      if (typeof value === "boolean") next[name] = value;
+      continue;
+    }
+    if (schema.type === "array") {
+      if (!Array.isArray(value)) continue;
+      const items = asRecord(raw.items);
+      const allowed = items ? allowedStringValues(items, "anyOf") : null;
+      const selected = allowed
+        ? value.filter((item) => allowed.has(item))
+        : value;
+      if (value.length === 0 || selected.length > 0) next[name] = selected;
+      continue;
+    }
+
+    // Unknown future field types render as text until Berd learns their
+    // semantics. Preserve only text that the fallback control can display.
+    if (typeof value === "string") next[name] = value;
+  }
+  return next;
+}
+
 function normalizedContent(
   pending: PendingElicitation,
 ): Record<string, ElicitationContentValue> {
   const properties = pending.request.requestedSchema.properties ?? {};
   const content = Object.fromEntries(
-    Object.entries(pending.content).filter(([, value]) => {
+    Object.entries(
+      contentForRequest(pending.request, pending.content, true),
+    ).filter(([, value]) => {
       if (typeof value === "string") return value.trim().length > 0;
       if (Array.isArray(value)) return value.length > 0;
       return true;
@@ -250,13 +325,7 @@ function contentWithoutSecrets(
   request: FormElicitationRequest,
   content: Record<string, ElicitationContentValue>,
 ): Record<string, ElicitationContentValue> {
-  const properties = request.requestedSchema.properties ?? {};
-  return Object.fromEntries(
-    Object.entries(content).filter(
-      ([name]) =>
-        !properties[name] || !isSecretElicitationProperty(properties[name]),
-    ),
-  );
+  return contentForRequest(request, content, false);
 }
 
 function requestWithoutSecretDefaults(
@@ -376,6 +445,16 @@ export const useElicitationStore = create<ElicitationState>((set, get) => ({
           ? {
               ...queue[existingIndex],
               request,
+              content: {
+                ...initialContent(request),
+                ...contentWithoutSecrets(
+                  request,
+                  contentWithoutSecrets(
+                    queue[existingIndex].request,
+                    queue[existingIndex].content,
+                  ),
+                ),
+              },
               recovered: metadata.recovered,
               continuation: metadata.continuation,
               resolve: queue[existingIndex].resolve
