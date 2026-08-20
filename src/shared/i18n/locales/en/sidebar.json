@@ -78,8 +78,10 @@
     "recents": "Chats"
   },
   "status": {
+    "awaitingResponse": "Waiting for your answer",
     "chatActive": "Chat active",
     "pinnedChat": "Pinned chat",
+    "recoveredQuestion": "Recovered question draft",
     "unreadMessages": "Unread messages"
   },
   "showLess": "Show less",
