@@ -2,14 +2,16 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   DEFAULT_GOOSE_MCP_HOST_CAPABILITIES,
   GooseClient,
+  type GooseClientCallbacks,
   type GooseInitializeRequest,
 } from "@aaif/goose-sdk";
 import {
   PROTOCOL_VERSION,
-  type Client,
   type SessionNotification,
   type RequestPermissionRequest,
   type RequestPermissionResponse,
+  type CreateElicitationRequest,
+  type CreateElicitationResponse,
 } from "@agentclientprotocol/sdk";
 import packageJson from "../../../package.json";
 import { createWebSocketStream } from "./createWebSocketStream";
@@ -58,11 +60,35 @@ export function setPermissionHandler(handler: PermissionRequestHandler): void {
   permissionHandler = handler;
 }
 
+export type ElicitationRequestHandler = (
+  request: CreateElicitationRequest,
+  signal?: AbortSignal,
+  wireRequestId?: string | number,
+  connection?: {
+    connectionGeneration: number;
+    connectionInstanceId: string;
+  },
+) => Promise<CreateElicitationResponse>;
+let elicitationHandler: ElicitationRequestHandler | null = null;
+let elicitationCancellationHandler: (() => void) | null = null;
+export function setElicitationHandler(
+  handler: ElicitationRequestHandler,
+): void {
+  elicitationHandler = handler;
+}
+export function setElicitationCancellationHandler(handler: () => void): void {
+  elicitationCancellationHandler = handler;
+}
+
 let clientPromise: Promise<GooseClient> | null = null;
 let resolvedClient: GooseClient | null = null;
 let activeStream: ReturnType<typeof createWebSocketStream> | null = null;
+let nextConnectionGeneration = 0;
 
-function createClientCallbacks(): () => Client {
+function createClientCallbacks(
+  connectionGeneration: number,
+  connectionInstanceId: string,
+): () => GooseClientCallbacks {
   return () => ({
     requestPermission: async (
       args: RequestPermissionRequest,
@@ -89,7 +115,37 @@ function createClientCallbacks(): () => Client {
         await notificationHandler.handleSessionNotification(notification);
       }
     },
+    unstable_createElicitation: async (
+      request: CreateElicitationRequest,
+      signal: AbortSignal,
+      requestId?: string | number,
+    ) =>
+      elicitationHandler?.(request, signal, requestId, {
+        connectionGeneration,
+        connectionInstanceId,
+      }) ?? { action: "cancel" },
   });
+}
+
+/** Test only: production callbacks are bound when a new client is created. */
+export function createClientCallbacksForTests(
+  connectionGeneration: number,
+  connectionInstanceId = `test-connection:${connectionGeneration}`,
+): GooseClientCallbacks {
+  return createClientCallbacks(connectionGeneration, connectionInstanceId)();
+}
+
+function createConnectionInstanceId(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  if (typeof globalThis.crypto?.getRandomValues === "function") {
+    const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+    return [...bytes]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+  }
+  throw new Error("Secure randomness is required to create an ACP connection");
 }
 
 function monitorConnection(
@@ -103,6 +159,7 @@ function monitorConnection(
     resolvedClient = null;
     clientPromise = null;
     activeStream = null;
+    elicitationCancellationHandler?.();
   };
   client.closed
     .then(() => {
@@ -129,6 +186,7 @@ export async function invalidateClientConnection(): Promise<void> {
   activeStream = null;
   resolvedClient = null;
   clientPromise = null;
+  elicitationCancellationHandler?.();
   if (stream) {
     await stream.writable.abort();
   }
@@ -166,10 +224,16 @@ async function initializeConnection(): Promise<GooseClient> {
   );
 
   const tStream = performance.now();
+  nextConnectionGeneration += 1;
+  const connectionGeneration = nextConnectionGeneration;
+  const connectionInstanceId = createConnectionInstanceId();
   const stream = createWebSocketStream(wsUrl);
   activeStream = stream;
 
-  const client = new GooseClient(createClientCallbacks(), stream);
+  const client = new GooseClient(
+    createClientCallbacks(connectionGeneration, connectionInstanceId),
+    stream,
+  );
   perfLog(
     `[perf:conn] ws stream + client created in ${(performance.now() - tStream).toFixed(1)}ms`,
   );
@@ -178,6 +242,7 @@ async function initializeConnection(): Promise<GooseClient> {
   await client.initialize({
     protocolVersion: PROTOCOL_VERSION,
     clientCapabilities: {
+      elicitation: { form: {} },
       _meta: {
         goose: {
           mcpHostCapabilities: DEFAULT_GOOSE_MCP_HOST_CAPABILITIES,
