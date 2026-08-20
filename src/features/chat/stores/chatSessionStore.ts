@@ -23,6 +23,7 @@ import { mergeAcpSessionPage } from "@/features/chat/lib/acpSessionMapping";
 import { releaseSession } from "@/features/chat/lib/sessionWindowCommands";
 import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import { useSecurityConfirmationStore } from "@/features/security/stores/securityConfirmationStore";
+import { useElicitationStore } from "@/features/elicitation/stores/elicitationStore";
 import {
   logReasoningEffortInfo,
   reasoningEffortConfigLogFields,
@@ -436,6 +437,7 @@ function settleArchiveMutationAndCancelIfArchived(
 
   if (!operations?.size && state.getSession(sessionId)?.archivedAt) {
     useSecurityConfirmationStore.getState().cancelAll(sessionId);
+    useElicitationStore.getState().cancelAll(sessionId);
   }
 }
 
@@ -973,6 +975,7 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
     });
     removePersistedChatWorkspaceMetadata(id);
     useSecurityConfirmationStore.getState().cancelAll(id);
+    useElicitationStore.getState().cancelAll(id);
     releaseWindowedSession(id);
   },
 

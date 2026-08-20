@@ -14,6 +14,7 @@ import {
   getSessionWindowSupport,
 } from "@/features/chat/lib/sessionWindowCommands";
 import { setWorkingIndicatorAnimationEnabled } from "@/shared/preferences/workingIndicatorAnimationPreference";
+import { useElicitationStore } from "@/features/elicitation/stores/elicitationStore";
 
 const mocks = vi.hoisted(() => ({
   toastError: vi.fn(),
@@ -65,6 +66,7 @@ describe("SidebarChatRow", () => {
     Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
     resetHomeWidgetStoreForTests();
     localStorage.clear();
+    useElicitationStore.setState({ pendingBySessionId: {} });
     useSessionWindowStore.getState().setSnapshot([]);
     vi.mocked(getSessionWindowSupport).mockResolvedValue({
       supported: true,
@@ -285,6 +287,43 @@ describe("SidebarChatRow", () => {
     ).toBeInTheDocument();
     expect(
       container.querySelector("[data-sidebar-chat-timestamp]"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("prioritizes an interactive-question badge for a background chat", () => {
+    useElicitationStore.getState().enqueue({
+      request: {
+        mode: "form",
+        sessionId: "session-1",
+        message: "Choose a direction",
+        requestedSchema: {
+          type: "object",
+          properties: { direction: { type: "string" } },
+        },
+        _meta: { goose: { elicitationId: "question-1" } },
+      },
+      resolve: vi.fn(),
+    });
+    const { container } = render(
+      <SidebarChatRow
+        id="session-1"
+        title="Waiting Chat"
+        isActive={false}
+        isRunning
+      />,
+    );
+
+    expect(
+      screen.getByRole("status", { name: /waiting for your answer/i }),
+    ).toBeInTheDocument();
+    expect(
+      container.querySelector("[data-sidebar-chat-elicitation-status]"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Waiting Chat").closest(".shimmer-text"),
+    ).toBeNull();
+    expect(
+      container.querySelector("[data-sidebar-chat-status]"),
     ).not.toBeInTheDocument();
   });
 

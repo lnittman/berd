@@ -16,6 +16,10 @@ const mocks = vi.hoisted(() => ({
   },
   cancelLogin: vi.fn(),
   getAuthStatus: vi.fn(),
+  broadcastElicitationPersistenceIdentity: vi.fn(),
+  clearPersistedElicitations: vi.fn(),
+  prepareElicitationPersistenceIdentity: vi.fn(),
+  suspendElicitationPersistence: vi.fn(),
   securityConfirmationFallbackRender: vi.fn(),
   startLogin: vi.fn(),
   toastError: vi.fn(),
@@ -37,6 +41,20 @@ vi.mock("@/features/auth/api/auth", () => ({
 
 vi.mock("@/shared/profile/buildProfile", () => ({
   getBuildFeatureState: () => mocks.buildFeatures,
+}));
+
+vi.mock("@/features/elicitation/lib/elicitationPersistenceEvents", () => ({
+  broadcastElicitationPersistenceIdentity: (...args: unknown[]) =>
+    mocks.broadcastElicitationPersistenceIdentity(...args),
+}));
+
+vi.mock("@/features/elicitation/stores/elicitationStore", () => ({
+  clearPersistedElicitations: (...args: unknown[]) =>
+    mocks.clearPersistedElicitations(...args),
+  prepareElicitationPersistenceIdentity: (...args: unknown[]) =>
+    mocks.prepareElicitationPersistenceIdentity(...args),
+  suspendElicitationPersistence: (...args: unknown[]) =>
+    mocks.suspendElicitationPersistence(...args),
 }));
 
 vi.mock("@/shared/hooks/useAvatarSrc", () => ({
@@ -87,6 +105,9 @@ describe("App", () => {
       .mockResolvedValue(undefined);
     vi.stubGlobal("__TAURI_INTERNALS__", undefined);
     mocks.cancelLogin.mockResolvedValue(undefined);
+    mocks.broadcastElicitationPersistenceIdentity.mockResolvedValue(undefined);
+    mocks.clearPersistedElicitations.mockResolvedValue(undefined);
+    mocks.prepareElicitationPersistenceIdentity.mockResolvedValue(undefined);
     mocks.getAuthStatus.mockResolvedValue({
       loggedIn: false,
       requiresOrg: true,
@@ -101,6 +122,7 @@ describe("App", () => {
       kgooseBaseUrl: "https://test.kgoose.sqprod.co",
       email: "test@example.com",
       user: "test@example.com",
+      workspaceIdentifier: "workspace-1",
     });
   });
 
@@ -162,6 +184,31 @@ describe("App", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("waits for the app-global persistence snapshot before mounting the app shell", async () => {
+    const persistence = deferred<void>();
+    mocks.getAuthStatus.mockResolvedValueOnce({
+      loggedIn: true,
+      requiresOrg: false,
+      profile: "default",
+      kgooseBaseUrl: "http://localhost",
+      userId: "user-1",
+      workspaceIdentifier: "workspace-1",
+    });
+    mocks.prepareElicitationPersistenceIdentity.mockReturnValueOnce(
+      persistence.promise,
+    );
+
+    renderApp();
+    await waitFor(() =>
+      expect(mocks.prepareElicitationPersistenceIdentity).toHaveBeenCalled(),
+    );
+    expect(screen.queryByText("App Shell")).not.toBeInTheDocument();
+    expect(screen.getByText("Checking sign-in status")).toBeInTheDocument();
+
+    persistence.resolve();
+    expect(await screen.findByText("App Shell")).toBeInTheDocument();
+  });
+
   it("shows the logged-out login page without mounting the app shell", async () => {
     const { container } = renderApp();
 
@@ -210,6 +257,14 @@ describe("App", () => {
     expect(
       screen.queryByRole("heading", { name: "Goose" }),
     ).not.toBeInTheDocument();
+    expect(mocks.prepareElicitationPersistenceIdentity).toHaveBeenCalledWith({
+      accountId: "test@example.com",
+      workspaceId: "workspace-1",
+    });
+    expect(mocks.broadcastElicitationPersistenceIdentity).toHaveBeenCalledWith({
+      accountId: "test@example.com",
+      workspaceId: "workspace-1",
+    });
   });
 
   it("pre-populates the org from auth status and allows editing it", async () => {

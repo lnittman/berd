@@ -1,0 +1,939 @@
+import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { CreateElicitationResponse } from "@agentclientprotocol/sdk";
+import {
+  type FormElicitationRequest,
+  presentedElicitation,
+  useElicitationStore,
+} from "../stores/elicitationStore";
+import { ElicitationPanel } from "./ElicitationPanel";
+
+function headId(sessionId = "session-1"): string {
+  const id = presentedElicitation(
+    useElicitationStore.getState().pendingBySessionId[sessionId],
+  )?.id;
+  if (!id) throw new Error(`no pending elicitation for ${sessionId}`);
+  return id;
+}
+
+const mocks = vi.hoisted(() => ({
+  continueRecoveredElicitation: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../lib/recoveredElicitationContinuation", () => ({
+  continueRecoveredElicitation: (...args: unknown[]) =>
+    mocks.continueRecoveredElicitation(...args),
+}));
+
+function enqueue(
+  request: FormElicitationRequest,
+): Promise<CreateElicitationResponse> {
+  return new Promise((resolve) => {
+    useElicitationStore.getState().enqueue({ request, resolve });
+  });
+}
+
+describe("ElicitationPanel", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    mocks.continueRecoveredElicitation.mockReset();
+    mocks.continueRecoveredElicitation.mockImplementation(
+      async (
+        _request: unknown,
+        _response: unknown,
+        callbacks?: { beforePromptDispatch?: () => void },
+      ) => {
+        callbacks?.beforePromptDispatch?.();
+      },
+    );
+    useElicitationStore.setState({ pendingBySessionId: {} });
+  });
+
+  it("renders adapter Other, multi-select, and free-text fields as one form", async () => {
+    const user = userEvent.setup();
+    const response = enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Shape the plan",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          direction: {
+            type: "string",
+            title: "Direction",
+            oneOf: [
+              { const: "local", title: "Local" },
+              { const: "upstream", title: "Upstream" },
+            ],
+          },
+          direction__other: {
+            type: "string",
+            title: "Other",
+            _meta: { codex: { isOtherAnswer: true } },
+          },
+          surfaces: {
+            type: "array",
+            title: "Surfaces",
+            items: {
+              anyOf: [
+                { const: "desktop", title: "Desktop" },
+                { const: "cli", title: "CLI" },
+              ],
+            },
+          },
+          notes: { type: "string", title: "Notes" },
+        },
+        required: ["direction", "surfaces", "notes"],
+      },
+      _meta: { goose: { elicitationId: "question-1" } },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+
+    await user.click(screen.getByRole("radio", { name: "Other" }));
+    await user.type(
+      screen.getByRole("textbox", { name: "Other answer for Direction" }),
+      "Hybrid",
+    );
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("checkbox", { name: "Desktop" }));
+    await user.click(screen.getByRole("checkbox", { name: "CLI" }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.type(screen.getByRole("textbox", { name: "Notes" }), "Ship it");
+    await user.click(screen.getByRole("button", { name: "Submit" }));
+
+    await expect(response).resolves.toEqual({
+      action: "accept",
+      content: {
+        direction__other: "Hybrid",
+        surfaces: ["desktop", "cli"],
+        notes: "Ship it",
+      },
+    });
+  });
+
+  it("does not coerce a cleared required number to zero", async () => {
+    const user = userEvent.setup();
+    void enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Choose a count",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          count: { type: "number", title: "Count" },
+        },
+        required: ["count"],
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+
+    const input = screen.getByRole("spinbutton", { name: "Count" });
+    await user.type(input, "12");
+    await user.clear(input);
+
+    expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+    expect(
+      useElicitationStore.getState().pendingBySessionId["session-1"][0].content,
+    ).not.toHaveProperty("count");
+    expect(screen.queryByText("Question 1 of 1")).not.toBeInTheDocument();
+  });
+
+  it("accepts decimal numbers without native step validation", async () => {
+    const user = userEvent.setup();
+    const response = enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Choose a ratio",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          ratio: { type: "number", title: "Ratio" },
+        },
+        required: ["ratio"],
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+
+    const form = screen.getByRole("form", { name: "Choose a ratio" });
+    expect(form).toHaveAttribute("novalidate");
+    const input = screen.getByRole("spinbutton", { name: "Ratio" });
+    expect(input).toHaveAttribute("step", "any");
+    await user.type(input, "2.5");
+    await user.click(screen.getByRole("button", { name: "Submit" }));
+
+    await expect(response).resolves.toEqual({
+      action: "accept",
+      content: { ratio: 2.5 },
+    });
+  });
+
+  it("treats provider patterns as unevaluable in Berd's submit gate", async () => {
+    const user = userEvent.setup();
+    const response = enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Enter a code",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          code: { type: "string", title: "Code", pattern: "[A-Z]{2}" },
+        },
+        required: ["code"],
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+
+    const input = screen.getByRole("textbox", { name: "Code" });
+    await user.type(input, "aa");
+    await user.click(screen.getByRole("button", { name: "Submit" }));
+
+    await expect(response).resolves.toEqual({
+      action: "accept",
+      content: { code: "aa" },
+    });
+  });
+
+  it("uses request-scoped form controls and confirms Other with Enter", async () => {
+    const user = userEvent.setup();
+    const response = enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Choose a direction",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          direction: {
+            type: "string",
+            title: "Direction",
+            oneOf: [{ const: "local", title: "Local" }],
+          },
+          direction__other: {
+            type: "string",
+            title: "Other",
+            _meta: { codex: { isOtherAnswer: true } },
+          },
+        },
+        required: ["direction"],
+      },
+      _meta: { goose: { elicitationId: "request-42" } },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+
+    const form = screen.getByRole("form", { name: "Choose a direction" });
+    expect(form).toHaveAttribute("autocomplete", "off");
+    await user.click(screen.getByRole("radio", { name: "Other" }));
+    const other = screen.getByRole("textbox", {
+      name: "Other answer for Direction",
+    });
+    expect(other).toHaveAttribute(
+      "name",
+      "elicitation:request-42:direction__other",
+    );
+    expect(other).toHaveAttribute("autocomplete", "off");
+
+    await user.type(other, "A third way{Enter}");
+
+    await expect(response).resolves.toEqual({
+      action: "accept",
+      content: { direction__other: "A third way" },
+    });
+  });
+
+  it("exposes and enforces custom Other constraints", async () => {
+    const user = userEvent.setup();
+    const response = enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Choose a code",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          direction: {
+            type: "string",
+            title: "Direction",
+            oneOf: [{ const: "local", title: "Local" }],
+          },
+          direction__other: {
+            type: "string",
+            title: "Other",
+            description: "Use two uppercase letters.",
+            minLength: 2,
+            maxLength: 2,
+            pattern: "[A-Z]{2}",
+            _meta: { codex: { isOtherAnswer: true } },
+          },
+        },
+        required: ["direction"],
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+
+    const otherChoice = screen.getByRole("radio", { name: "Other" });
+    const description = screen.getByText("Use two uppercase letters.");
+    expect(otherChoice).toHaveAttribute("aria-describedby", description.id);
+    await user.click(otherChoice);
+
+    const otherInput = screen.getByRole("textbox", {
+      name: "Other answer for Direction",
+    });
+    expect(otherInput).toHaveAttribute("minlength", "2");
+    expect(otherInput).toHaveAttribute("maxlength", "2");
+    // The pattern is deliberately not mirrored onto the control or evaluated
+    // in-process: native regex execution has no interruptible boundary.
+    expect(otherInput).not.toHaveAttribute("pattern");
+    expect(otherInput).toHaveAttribute("aria-describedby", description.id);
+
+    await user.type(otherInput, "n");
+    expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+    await user.clear(otherInput);
+    await user.type(otherInput, "OK");
+    await user.click(screen.getByRole("button", { name: "Submit" }));
+
+    await expect(response).resolves.toEqual({
+      action: "accept",
+      content: { direction__other: "OK" },
+    });
+  });
+
+  it("merges an agent-provided Other option with its companion input", async () => {
+    const user = userEvent.setup();
+    void enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Choose a direction",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          direction: {
+            type: "string",
+            title: "Direction",
+            oneOf: [
+              { const: "local", title: "Local" },
+              {
+                const: "Other",
+                title: "Other",
+                description: "Describe a different direction.",
+              },
+            ],
+          },
+          direction_custom: {
+            type: "string",
+            title: "Other",
+          },
+        },
+        required: ["direction"],
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+
+    expect(screen.getAllByRole("radio", { name: "Other" })).toHaveLength(1);
+    expect(screen.getByText("Describe a different direction.")).toBeVisible();
+    await user.click(screen.getByRole("radio", { name: "Other" }));
+    expect(
+      screen.getByRole("textbox", { name: "Other answer for Direction" }),
+    ).toBeVisible();
+  });
+
+  it("keeps an agent-provided Other default visible and editable", async () => {
+    const user = userEvent.setup();
+    const response = enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Choose a direction",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          direction: {
+            type: "string",
+            title: "Direction",
+            default: "Other",
+            oneOf: [
+              { const: "local", title: "Local" },
+              { const: "Other", title: "Other" },
+            ],
+          },
+          direction_custom: { type: "string", title: "Other" },
+        },
+        required: ["direction"],
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+
+    expect(screen.getByRole("radio", { name: "Other" })).toBeChecked();
+    await user.type(
+      screen.getByRole("textbox", { name: "Other answer for Direction" }),
+      "Hybrid",
+    );
+    await user.click(screen.getByRole("button", { name: "Submit" }));
+
+    await expect(response).resolves.toEqual({
+      action: "accept",
+      content: { direction_custom: "Hybrid" },
+    });
+  });
+
+  it("allows a custom answer alongside multi-select choices", async () => {
+    const user = userEvent.setup();
+    const response = enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Choose surfaces",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          surfaces: {
+            type: "array",
+            title: "Surfaces",
+            items: {
+              anyOf: [
+                { const: "desktop", title: "Desktop" },
+                { const: "cli", title: "CLI" },
+              ],
+            },
+          },
+          surfaces_custom: {
+            type: "string",
+            title: "Other",
+          },
+        },
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+
+    await user.click(screen.getByRole("checkbox", { name: "Desktop" }));
+    await user.click(screen.getByRole("checkbox", { name: /Other/ }));
+    await user.type(
+      screen.getByRole("textbox", { name: "Other answer for Surfaces" }),
+      "API",
+    );
+    await user.click(screen.getByRole("button", { name: "Submit" }));
+
+    await expect(response).resolves.toEqual({
+      action: "accept",
+      content: { surfaces: ["desktop"], surfaces_custom: "API" },
+    });
+  });
+
+  it("merges an agent-provided multi-select Other option with its companion input", async () => {
+    const user = userEvent.setup();
+    const response = enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Choose surfaces",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          surfaces: {
+            type: "array",
+            title: "Surfaces",
+            items: {
+              anyOf: [
+                { const: "desktop", title: "Desktop" },
+                {
+                  const: "Other",
+                  title: "Other",
+                  description: "Name another surface.",
+                },
+              ],
+            },
+          },
+          surfaces_custom: {
+            type: "string",
+            title: "Other",
+            _meta: {
+              _askUserQuestionCustomAnswer: {
+                questionId: "surfaces",
+                isCustomAnswer: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+
+    expect(screen.getAllByRole("checkbox", { name: /Other/ })).toHaveLength(1);
+    expect(screen.getByText("Name another surface.")).toBeVisible();
+
+    await user.click(screen.getByRole("checkbox", { name: /Other/ }));
+    await user.type(
+      screen.getByRole("textbox", { name: "Other answer for Surfaces" }),
+      "Web",
+    );
+    await user.click(screen.getByRole("button", { name: "Submit" }));
+
+    await expect(response).resolves.toEqual({
+      action: "accept",
+      content: { surfaces_custom: "Web" },
+    });
+  });
+
+  it("keeps an agent-provided multi-select Other default visible and editable", async () => {
+    const user = userEvent.setup();
+    const response = enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Choose surfaces",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          surfaces: {
+            type: "array",
+            title: "Surfaces",
+            default: ["Other"],
+            items: {
+              anyOf: [
+                { const: "desktop", title: "Desktop" },
+                { const: "Other", title: "Other" },
+              ],
+            },
+          },
+          surfaces_custom: { type: "string", title: "Other" },
+        },
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+
+    expect(screen.getByRole("checkbox", { name: /Other/ })).toBeChecked();
+    await user.type(
+      screen.getByRole("textbox", { name: "Other answer for Surfaces" }),
+      "Web",
+    );
+    await user.click(screen.getByRole("button", { name: "Submit" }));
+
+    await expect(response).resolves.toEqual({
+      action: "accept",
+      content: { surfaces_custom: "Web" },
+    });
+  });
+
+  it("supports direct question navigation without allowing partial submit", async () => {
+    const user = userEvent.setup();
+    const response = enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Shape the rollout",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          direction: {
+            type: "string",
+            title: "Direction",
+            enum: ["local", "upstream"],
+            enumNames: ["Local", "Upstream"],
+          },
+          note: { type: "string", title: "Note" },
+        },
+        required: ["direction", "note"],
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+
+    expect(screen.getByText("Question 1 of 2")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Question 2" }));
+    expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+    await user.type(screen.getByRole("textbox", { name: "Note" }), "Ready");
+    expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Question 1" }));
+    await user.click(screen.getByRole("radio", { name: "Local" }));
+    await user.click(
+      screen.getByRole("button", { name: "Question 2, answered" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Submit" }));
+
+    await expect(response).resolves.toEqual({
+      action: "accept",
+      content: { direction: "local", note: "Ready" },
+    });
+  });
+
+  it("keeps a detached draft editable and sends it as a normal message", async () => {
+    const user = userEvent.setup();
+    void enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Shape the recovery",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          first: { type: "string", title: "First" },
+          second: { type: "string", title: "Second" },
+        },
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+    act(() => useElicitationStore.getState().detachAll("session-1"));
+
+    await user.type(screen.getByRole("textbox", { name: "First" }), "One");
+    expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
+    await user.keyboard("{Enter}");
+    await user.type(screen.getByRole("textbox", { name: "Second" }), "Two");
+    await user.click(screen.getByRole("button", { name: "Back" }));
+
+    expect(screen.getByRole("textbox", { name: "First" })).toHaveValue("One");
+    await user.click(
+      screen.getByRole("button", { name: "Question 2, answered" }),
+    );
+    expect(screen.getByRole("textbox", { name: "Second" })).toHaveValue("Two");
+    expect(
+      screen.getByText(
+        "The agent is no longer waiting for this answer. You can send it as a message instead.",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Decline to answer" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Discard" })).toBeEnabled();
+
+    await user.click(
+      screen.getByRole("button", { name: "Send answers as message" }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.continueRecoveredElicitation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "session-1",
+          message: "Shape the recovery",
+        }),
+        {
+          action: "accept",
+          content: { first: "One", second: "Two" },
+        },
+        { beforePromptDispatch: expect.any(Function) },
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        useElicitationStore.getState().pendingBySessionId["session-1"],
+      ).toBeUndefined(),
+    );
+  });
+
+  it("keeps a detached draft when sending it as a message fails", async () => {
+    const user = userEvent.setup();
+    mocks.continueRecoveredElicitation.mockRejectedValueOnce(
+      new Error("transport unavailable"),
+    );
+    void enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Keep this answer",
+      requestedSchema: {
+        type: "object",
+        properties: { note: { type: "string", title: "Note" } },
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+    act(() => useElicitationStore.getState().detachAll("session-1"));
+
+    await user.type(screen.getByRole("textbox", { name: "Note" }), "Draft");
+    await user.click(
+      screen.getByRole("button", { name: "Send answers as message" }),
+    );
+
+    expect(
+      await screen.findByText(
+        "That message couldn’t be sent. Your answers are still here.",
+      ),
+    ).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Note" })).toHaveValue("Draft");
+    expect(
+      useElicitationStore.getState().pendingBySessionId["session-1"],
+    ).toHaveLength(1);
+  });
+
+  it("does not offer a retry when delivery fails after prompt dispatch", async () => {
+    const user = userEvent.setup();
+    mocks.continueRecoveredElicitation.mockImplementationOnce(
+      async (
+        _request: unknown,
+        _response: unknown,
+        callbacks?: { beforePromptDispatch?: () => void },
+      ) => {
+        callbacks?.beforePromptDispatch?.();
+        throw new Error("connection closed after dispatch");
+      },
+    );
+    void enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Keep this answer",
+      requestedSchema: {
+        type: "object",
+        properties: { note: { type: "string", title: "Note" } },
+      },
+    });
+    const view = render(<ElicitationPanel sessionId="session-1" />);
+    act(() => useElicitationStore.getState().detachAll("session-1"));
+
+    await user.type(screen.getByRole("textbox", { name: "Note" }), "Draft");
+    await user.click(
+      screen.getByRole("button", { name: "Send answers as message" }),
+    );
+
+    expect(
+      await screen.findByText(
+        "Delivery couldn’t be confirmed. To avoid sending twice, Berd won’t retry these answers.",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Send answers as message" }),
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Discard" })).toBeDisabled();
+
+    view.unmount();
+    render(<ElicitationPanel sessionId="session-1" />);
+    expect(
+      screen.getByText(
+        "Delivery couldn’t be confirmed. To avoid sending twice, Berd won’t retry these answers.",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Send answers as message" }),
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Discard" })).toBeDisabled();
+  });
+
+  it("promotes each real question above bridge boilerplate", () => {
+    void enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Please answer the following questions.",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          direction: {
+            type: "string",
+            title: "Direction",
+            description: "Which direction should we take?",
+          },
+          rationale: {
+            type: "string",
+            title: "Rationale",
+            description: "What makes that direction right?",
+          },
+        },
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+
+    expect(
+      screen.queryByText("Please answer the following questions."),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Question 1 of 2")).toBeVisible();
+    expect(screen.getByText("Direction")).toHaveClass("uppercase");
+    expect(screen.getByText("Which direction should we take?")).toHaveClass(
+      "font-display",
+      "text-base",
+    );
+  });
+
+  it("shows credential-marked form fields as unsupported", async () => {
+    const user = userEvent.setup();
+    const response = enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Provide a credential",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          credential: {
+            type: "string",
+            title: "Credential",
+            _meta: { codex: { isSecret: true } },
+          },
+        },
+        required: ["credential"],
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+
+    expect(screen.queryByLabelText("Credential")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Berd can't show this answer type yet. You can still decline or cancel.",
+      ),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Decline to answer" }));
+
+    await expect(response).resolves.toEqual({ action: "decline" });
+  });
+
+  it("does not render a supported companion for an unsupported credential parent", async () => {
+    const user = userEvent.setup();
+    const response = enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Provide a credential",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          credential: {
+            type: "string",
+            title: "Credential",
+            _meta: { codex: { isSecret: true } },
+          },
+          credential__other: {
+            type: "string",
+            title: "Other",
+            _meta: {
+              codex: { isOtherAnswer: true, questionId: "credential" },
+            },
+          },
+        },
+        required: ["credential"],
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Decline to answer" }));
+
+    await expect(response).resolves.toEqual({ action: "decline" });
+  });
+
+  it("records an explicit false boolean answer", async () => {
+    const user = userEvent.setup();
+    const response = enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "Confirm the setting",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean", title: "Enable previews?" },
+        },
+        required: ["enabled"],
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+
+    await user.click(screen.getByRole("radio", { name: "No" }));
+    await user.click(screen.getByRole("button", { name: "Submit" }));
+
+    await expect(response).resolves.toEqual({
+      action: "accept",
+      content: { enabled: false },
+    });
+  });
+
+  it("preserves a draft on Escape and requires explicit cancellation", async () => {
+    const user = userEvent.setup();
+    const response = enqueue({
+      mode: "form",
+      sessionId: "session-1",
+      message: "One more thing",
+      requestedSchema: {
+        type: "object",
+        properties: { note: { type: "string", title: "Note" } },
+      },
+    });
+    render(<ElicitationPanel sessionId="session-1" />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("form", { name: "One more thing" }),
+      ).toHaveFocus(),
+    );
+    await user.type(screen.getByRole("textbox", { name: "Note" }), "Draft");
+    await user.keyboard("{Escape}");
+
+    expect(screen.getByRole("textbox", { name: "Note" })).toHaveValue("Draft");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await expect(response).resolves.toEqual({ action: "cancel" });
+  });
+
+  it("returns focus to the composer after the final answer", async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <textarea aria-label="Message" />
+        <ElicitationPanel sessionId="session-1" />
+      </>,
+    );
+    const composer = screen.getByRole("textbox", { name: "Message" });
+    composer.focus();
+
+    act(() => {
+      void enqueue({
+        mode: "form",
+        sessionId: "session-1",
+        message: "Name the release",
+        requestedSchema: {
+          type: "object",
+          properties: { name: { type: "string", title: "Name" } },
+          required: ["name"],
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("form", { name: "Name the release" }),
+      ).toHaveFocus(),
+    );
+    await user.type(screen.getByRole("textbox", { name: "Name" }), "Perch");
+    await user.click(screen.getByRole("button", { name: "Submit" }));
+
+    await waitFor(() => expect(composer).toHaveFocus());
+  });
+
+  it("restores focus when a recovered Other input mounts with autofocus", async () => {
+    render(
+      <>
+        <textarea aria-label="Message" />
+        <ElicitationPanel sessionId="session-1" />
+      </>,
+    );
+    const composer = screen.getByRole("textbox", { name: "Message" });
+    composer.focus();
+
+    act(() => {
+      void enqueue({
+        mode: "form",
+        sessionId: "session-1",
+        message: "Choose a direction",
+        requestedSchema: {
+          type: "object",
+          properties: {
+            direction: {
+              type: "string",
+              title: "Direction",
+              oneOf: [
+                { const: "local", title: "Local" },
+                { const: "other", title: "Other" },
+              ],
+            },
+            direction__other: {
+              type: "string",
+              title: "Other",
+              _meta: { codex: { isOtherAnswer: true } },
+            },
+          },
+        },
+      });
+      useElicitationStore
+        .getState()
+        .setValue(
+          "session-1",
+          headId("session-1"),
+          "direction__other",
+          "Recovered draft",
+        );
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("form", { name: "Choose a direction" }),
+      ).toHaveFocus(),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(composer).toHaveFocus());
+  });
+});

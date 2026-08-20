@@ -135,3 +135,20 @@ const result = await client.someMethod({ ... });
 ```
 
 See the [main documentation](../../README.md) for more details.
+
+## Upgrading to `@agentclientprotocol/sdk` 1.x
+
+`GooseClient` is built on the 1.x client app builder. Two exports changed, both
+because the upstream SDK changed, not by choice here:
+
+- **`unstable_setSessionModel` is gone.** ACP 1.x no longer defines the method,
+  so there is nothing to call. Set the model through
+  `setSessionConfigOption` instead.
+- **`ClientSideConnection` is now `ClientConnection`, and is exported as a type
+  only.** The 1.x builder owns connection construction, so there is no runtime
+  class to re-export. Build a connection with `new GooseClient(...)`.
+
+`GooseClientCallbacks` still covers the whole ACP `Client` surface. Only
+`requestPermission` and `sessionUpdate` are required; every other member is
+optional and is registered when you supply it, so implementing a capability is
+enough to start receiving it.

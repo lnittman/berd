@@ -7,7 +7,7 @@ import {
   type PointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
-import { ExternalLink, MoreHorizontal } from "lucide-react";
+import { CircleHelp, ExternalLink, MoreHorizontal } from "lucide-react";
 import { IconCheck, IconGitBranch } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import {
@@ -67,6 +67,7 @@ import { ActiveChatPulseDot } from "@/shared/ui/SessionActivityIndicator";
 import { useWorkingIndicatorAnimationPreference } from "@/shared/preferences/workingIndicatorAnimationPreference";
 import { useSidebarChatDrag } from "./SidebarChatDragContext";
 import { toast } from "sonner";
+import { useElicitationStore } from "@/features/elicitation/stores/elicitationStore";
 
 const INACTIVE_CHAT_ROW_CLASS = cn(
   SIDEBAR_ROW_TEXT_DEFAULT_CLASS,
@@ -243,8 +244,26 @@ export function SidebarChatRow({
   const { t } = useTranslation(["sidebar", "common"]);
   const workingIndicatorAnimationPreference =
     useWorkingIndicatorAnimationPreference();
+  // A live question means an agent is blocked on this chat. A recovered draft
+  // is only waiting on the user's convenience, so it must not claim someone is
+  // waiting nor stop a genuinely running session from looking like one.
+  const hasLiveElicitation = useElicitationStore((state) =>
+    (state.pendingBySessionId[id] ?? []).some(
+      (pending) => pending.resolve !== null,
+    ),
+  );
+  const hasRecoveredElicitation = useElicitationStore(
+    (state) =>
+      (state.pendingBySessionId[id]?.length ?? 0) > 0 &&
+      (state.pendingBySessionId[id] ?? []).every(
+        (pending) => pending.resolve === null,
+      ),
+  );
+  const hasPendingElicitation = hasLiveElicitation || hasRecoveredElicitation;
   const animateRunningState =
-    isRunning && workingIndicatorAnimationPreference.enabled;
+    isRunning &&
+    !hasLiveElicitation &&
+    workingIndicatorAnimationPreference.enabled;
   const {
     draggingSession,
     beginSessionDrag,
@@ -464,7 +483,7 @@ export function SidebarChatRow({
       className={cn(
         "min-w-0 flex-1 justify-start rounded-sm",
         hasFlatProjectColumn ? "pl-0 gap-0" : rowPaddingClass,
-        isRunning || hasUnread || activityTimestamp
+        isRunning || hasPendingElicitation || hasUnread || activityTimestamp
           ? densityClasses.timestampReserve
           : densityClasses.menuReserve,
         hasBranchName
@@ -863,7 +882,27 @@ export function SidebarChatRow({
             rowButton
           )}
 
-          {isRunning ? (
+          {hasPendingElicitation ? (
+            <span
+              data-sidebar-chat-elicitation-status
+              role="status"
+              aria-label={t(
+                hasLiveElicitation
+                  ? "status.awaitingResponse"
+                  : "status.recoveredQuestion",
+              )}
+              className={cn(
+                "pointer-events-none absolute flex size-5 items-center justify-center rounded-full text-warning transition-opacity duration-75",
+                hasBranchName ? "top-1" : "top-1/2 -translate-y-1/2",
+                densityClasses.menuInset,
+                selectionEnabled || menuOpen || contextMenuOpen || dragging
+                  ? "opacity-0"
+                  : "opacity-100 group-hover/chat-row:opacity-0 group-focus-within/chat-row:opacity-0",
+              )}
+            >
+              <CircleHelp className="size-4" aria-hidden="true" />
+            </span>
+          ) : isRunning ? (
             <span
               data-sidebar-chat-status
               role="status"

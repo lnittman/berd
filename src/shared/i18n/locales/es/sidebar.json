@@ -78,8 +78,10 @@
     "pinned": "Fijados"
   },
   "status": {
+    "awaitingResponse": "Esperando tu respuesta",
     "chatActive": "Chat activo",
     "pinnedChat": "Chat fijado",
+    "recoveredQuestion": "Borrador de pregunta recuperada",
     "unreadMessages": "Mensajes no leídos"
   },
   "showLess": "Mostrar menos",

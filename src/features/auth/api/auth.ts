@@ -11,6 +11,7 @@ export interface AuthStatus {
   email?: string | null;
   name?: string | null;
   userId?: string | null;
+  workspaceIdentifier?: string | null;
 }
 
 // Workspace switching (main #965, ported during the BOT-1430 reconciliation,
@@ -33,12 +34,30 @@ export interface AuthWorkspaceSwitchResult {
   switched: boolean;
 }
 
+async function withActiveWorkspace(status: AuthStatus): Promise<AuthStatus> {
+  if (!status.loggedIn) return status;
+  try {
+    const workspaces = await invoke<AuthWorkspaceList>("list_auth_workspaces");
+    return {
+      ...status,
+      workspaceIdentifier: workspaces.activeWorkspaceIdentifier ?? null,
+    };
+  } catch {
+    // Auth remains usable when workspace discovery is temporarily unavailable;
+    // elicitation persistence stays memory-only until its exact boundary is
+    // known rather than substituting the broader auth routing context.
+    return status;
+  }
+}
+
 export async function getAuthStatus(): Promise<AuthStatus> {
-  return invoke<AuthStatus>("auth_status");
+  return withActiveWorkspace(await invoke<AuthStatus>("auth_status"));
 }
 
 export async function startLogin(org?: string | null): Promise<AuthStatus> {
-  return invoke<AuthStatus>("start_login", { org: org ?? null });
+  return withActiveWorkspace(
+    await invoke<AuthStatus>("start_login", { org: org ?? null }),
+  );
 }
 
 export async function cancelLogin(): Promise<void> {

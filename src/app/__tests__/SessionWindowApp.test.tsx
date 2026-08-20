@@ -6,6 +6,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { runChatRuntimeStartup } from "@/app/lib/chatRuntimeStartup";
 import { loadSessionMessagesAndPrepare } from "@/features/chat/lib/sessionActivation";
 import type { SessionHandoffSnapshotAvailable } from "@/features/chat/lib/sessionHandoffEvents";
 import {
@@ -38,7 +39,15 @@ const handoffListeners = vi.hoisted(() => ({
 const mocks = vi.hoisted(() => ({
   buildFeatures: {
     securityMl: true,
+    authGate: false,
   },
+  getAuthStatus: vi.fn(),
+  prepareElicitationPersistenceIdentity: vi.fn(),
+  suspendElicitationPersistence: vi.fn(),
+  listenElicitationPersistenceIdentity: vi.fn(),
+  persistenceIdentityListener: undefined as
+    | ((identity: { accountId: string; workspaceId: string } | null) => void)
+    | undefined,
 }));
 
 vi.mock("@/app/lib/chatRuntimeStartup", () => ({
@@ -47,6 +56,22 @@ vi.mock("@/app/lib/chatRuntimeStartup", () => ({
 
 vi.mock("@/shared/profile/buildProfile", () => ({
   getBuildFeatureState: () => mocks.buildFeatures,
+}));
+
+vi.mock("@/features/auth/api/auth", () => ({
+  getAuthStatus: (...args: unknown[]) => mocks.getAuthStatus(...args),
+}));
+
+vi.mock("@/features/elicitation/lib/elicitationPersistenceEvents", () => ({
+  listenElicitationPersistenceIdentity: (...args: unknown[]) =>
+    mocks.listenElicitationPersistenceIdentity(...args),
+}));
+
+vi.mock("@/features/elicitation/stores/elicitationStore", () => ({
+  prepareElicitationPersistenceIdentity: (...args: unknown[]) =>
+    mocks.prepareElicitationPersistenceIdentity(...args),
+  suspendElicitationPersistence: (...args: unknown[]) =>
+    mocks.suspendElicitationPersistence(...args),
 }));
 
 vi.mock("@/features/chat/lib/sessionActivation", () => ({
@@ -193,6 +218,26 @@ async function renderMirrorSessionWindow() {
 describe("SessionWindowApp", () => {
   beforeEach(() => {
     vi.useRealTimers();
+    mocks.buildFeatures.authGate = false;
+    mocks.getAuthStatus.mockReset();
+    mocks.prepareElicitationPersistenceIdentity.mockReset();
+    mocks.prepareElicitationPersistenceIdentity.mockResolvedValue(undefined);
+    mocks.suspendElicitationPersistence.mockReset();
+    mocks.listenElicitationPersistenceIdentity.mockReset();
+    mocks.listenElicitationPersistenceIdentity.mockImplementation(
+      (
+        handler: (
+          identity: { accountId: string; workspaceId: string } | null,
+        ) => void,
+      ) => {
+        mocks.persistenceIdentityListener = handler;
+        return Promise.resolve(() => {
+          mocks.persistenceIdentityListener = undefined;
+        });
+      },
+    );
+    mocks.persistenceIdentityListener = undefined;
+    vi.mocked(runChatRuntimeStartup).mockClear();
     handoffListeners.available = undefined;
     handoffListeners.searchTarget = undefined;
     useSessionWindowStore.getState().setSnapshot([]);
@@ -219,6 +264,145 @@ describe("SessionWindowApp", () => {
     vi.mocked(readSessionHandoffSnapshot).mockReset();
     vi.mocked(readSessionHandoffSnapshot).mockResolvedValue(null);
     vi.mocked(recoverSessionHandoff).mockClear();
+  });
+
+  it("configures an exact persistence identity before starting a session window runtime", async () => {
+    mocks.buildFeatures.authGate = true;
+    mocks.getAuthStatus.mockResolvedValue({
+      loggedIn: true,
+      requiresOrg: false,
+      profile: "default",
+      kgooseBaseUrl: "http://localhost",
+      userId: "user-1",
+      workspaceIdentifier: "workspace-1",
+    });
+    seedSession();
+
+    renderSessionWindow();
+    await screen.findByTestId("chat-view");
+
+    expect(mocks.prepareElicitationPersistenceIdentity).toHaveBeenCalledWith({
+      accountId: "user-1",
+      workspaceId: "workspace-1",
+    });
+    expect(
+      mocks.prepareElicitationPersistenceIdentity.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      vi.mocked(runChatRuntimeStartup).mock.invocationCallOrder[0],
+    );
+  });
+
+  it("waits for identity-listener registration before starting the runtime", async () => {
+    const registration = deferred<() => void>();
+    mocks.listenElicitationPersistenceIdentity.mockImplementationOnce(
+      (
+        handler: (
+          identity: { accountId: string; workspaceId: string } | null,
+        ) => void,
+      ) => {
+        mocks.persistenceIdentityListener = handler;
+        return registration.promise;
+      },
+    );
+    seedSession();
+
+    renderSessionWindow();
+    await waitFor(() =>
+      expect(mocks.listenElicitationPersistenceIdentity).toHaveBeenCalledOnce(),
+    );
+    expect(runChatRuntimeStartup).not.toHaveBeenCalled();
+
+    registration.resolve(() => {});
+    await screen.findByTestId("chat-view");
+    expect(runChatRuntimeStartup).toHaveBeenCalledOnce();
+  });
+
+  it("prefers an identity event that arrives during the auth snapshot", async () => {
+    const authSnapshot = deferred<{
+      loggedIn: true;
+      requiresOrg: false;
+      profile: string;
+      kgooseBaseUrl: string;
+      userId: string;
+      workspaceIdentifier: string;
+    }>();
+    mocks.buildFeatures.authGate = true;
+    mocks.getAuthStatus.mockReturnValue(authSnapshot.promise);
+    seedSession();
+
+    renderSessionWindow();
+    await waitFor(() => expect(mocks.getAuthStatus).toHaveBeenCalledOnce());
+    act(() => {
+      mocks.persistenceIdentityListener?.({
+        accountId: "event-user",
+        workspaceId: "event-workspace",
+      });
+    });
+    authSnapshot.resolve({
+      loggedIn: true,
+      requiresOrg: false,
+      profile: "default",
+      kgooseBaseUrl: "http://localhost",
+      userId: "snapshot-user",
+      workspaceIdentifier: "snapshot-workspace",
+    });
+
+    await screen.findByTestId("chat-view");
+    expect(mocks.prepareElicitationPersistenceIdentity).toHaveBeenCalledOnce();
+    expect(mocks.prepareElicitationPersistenceIdentity).toHaveBeenCalledWith({
+      accountId: "event-user",
+      workspaceId: "event-workspace",
+    });
+  });
+
+  it("keeps a session window memory-only when workspace discovery is unavailable", async () => {
+    mocks.buildFeatures.authGate = true;
+    mocks.getAuthStatus.mockResolvedValue({
+      loggedIn: true,
+      requiresOrg: false,
+      profile: "default",
+      kgooseBaseUrl: "http://localhost",
+      userId: "user-1",
+      org: "org-routing-context",
+    });
+    seedSession();
+
+    renderSessionWindow();
+    await screen.findByTestId("chat-view");
+
+    expect(mocks.suspendElicitationPersistence).toHaveBeenCalledOnce();
+    expect(mocks.prepareElicitationPersistenceIdentity).not.toHaveBeenCalled();
+  });
+
+  it("settles drafts on logout and reconfigures them on a later login event", async () => {
+    seedSession();
+    renderSessionWindow();
+    await screen.findByTestId("chat-view");
+    await waitFor(() =>
+      expect(mocks.persistenceIdentityListener).toBeDefined(),
+    );
+    mocks.suspendElicitationPersistence.mockClear();
+    mocks.prepareElicitationPersistenceIdentity.mockClear();
+
+    act(() => mocks.persistenceIdentityListener?.(null));
+    await waitFor(() =>
+      expect(mocks.suspendElicitationPersistence).toHaveBeenCalledOnce(),
+    );
+    expect(mocks.prepareElicitationPersistenceIdentity).not.toHaveBeenCalled();
+
+    act(() => {
+      mocks.persistenceIdentityListener?.({
+        accountId: "user-2",
+        workspaceId: "workspace-2",
+      });
+    });
+    await waitFor(() =>
+      expect(mocks.prepareElicitationPersistenceIdentity).toHaveBeenCalledWith({
+        accountId: "user-2",
+        workspaceId: "workspace-2",
+      }),
+    );
+    expect(mocks.suspendElicitationPersistence).toHaveBeenCalledTimes(2);
   });
 
   it("renders an error state for an unknown session after hydration", async () => {

@@ -39,6 +39,7 @@ vi.mock("@/features/chat/stores/chatSessionStore", () => ({
 }));
 
 vi.mock("@/features/providers/curatedProviders", () => ({
+  CURATED_PROVIDER_CATALOG: [],
   getCuratedAgentProviders: () => [],
 }));
 
@@ -129,6 +130,8 @@ vi.mock("@/shared/api/acpConnection", () => ({
   getClient: mockGetClient,
   setNotificationHandler: () => {},
   setPermissionHandler: () => {},
+  setElicitationHandler: () => {},
+  setElicitationCancellationHandler: () => {},
 }));
 
 vi.mock("@/features/security/acp/securityPermissionHandler", () => ({

@@ -39,8 +39,12 @@ import {
   getClient,
   setNotificationHandler,
   setPermissionHandler,
+  setElicitationHandler,
+  setElicitationCancellationHandler,
 } from "@/shared/api/acpConnection";
 import { handleSecurityPermissionRequest } from "@/features/security/acp/securityPermissionHandler";
+import { handleElicitationRequest } from "@/features/elicitation/acp/elicitationRequestHandler";
+import { useElicitationStore } from "@/features/elicitation/stores/elicitationStore";
 import notificationHandler from "@/features/chat/acp/acpNotificationHandler";
 import { registerChatSessionConfigSnapshotHandlers } from "@/features/chat/acp/sessionConfigSnapshotAdapter";
 import { perfLog } from "@/shared/lib/perfLog";
@@ -121,6 +125,10 @@ async function startChatRuntime(
   const tConn = performance.now();
   registerChatSessionConfigSnapshotHandlers();
   setNotificationHandler(notificationHandler);
+  setElicitationHandler(handleElicitationRequest);
+  setElicitationCancellationHandler(() =>
+    useElicitationStore.getState().detachAll(),
+  );
   if (options.hydrateMessageQueues !== false) {
     const persistedMessageQueues = await loadPersistedMessageQueues();
     useChatStore.getState().replaceQueuedMessages(persistedMessageQueues);

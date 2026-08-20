@@ -13,6 +13,7 @@ import {
   TopBarActionsProvider,
   useTopBarActions,
 } from "@/app/contexts/TopBarActionsContext";
+import { useElicitationStore } from "@/features/elicitation/stores/elicitationStore";
 import { TERMINAL_FALLBACK_CWD_STORAGE_KEY } from "@/features/terminal/lib/terminalCwdPreference";
 import type { ChatSession } from "../../stores/chatSessionStore";
 import { ChatView } from "../ChatView";
@@ -384,85 +385,86 @@ function chatSessionWithWorkingDir(workingDir: string): ChatSession {
   };
 }
 
+afterEach(() => {
+  act(() => cleanup());
+});
+
+beforeEach(() => {
+  mocks.messageTimelineSpy.mockClear();
+  mocks.chatInputSpy.mockClear();
+  mocks.chatRightRailSpy.mockClear();
+  mocks.setRightRailOpen.mockClear();
+  mocks.patchSession.mockClear();
+  mocks.handleSend.mockClear();
+  mocks.handleDraftChange.mockClear();
+  mocks.queueTerminalCommand.mockClear();
+  mocks.restartTerminalSession.mockClear();
+  mocks.runCommandInTerminalSession.mockClear();
+  mocks.runCommandInTerminalSession.mockReturnValue(false);
+  mocks.stopTerminalSession.mockClear();
+  mocks.terminalStatusListeners.clear();
+  mocks.isRightRailOpen = false;
+  mocks.activeWorkspaceBySession = {};
+  mocks.afterNextPaintCallbacks = [];
+  mocks.autoFlushAfterNextPaint = true;
+  window.localStorage.clear();
+  useElicitationStore.setState({ pendingBySessionId: {} });
+  mockMatchMedia(false);
+  mocks.useChatSessionController.mockReturnValue({
+    messages: [
+      {
+        id: "user-1",
+        role: "user",
+        created: Date.now(),
+        content: [
+          {
+            type: "text",
+            text: "Hello",
+          },
+        ],
+      },
+    ],
+    streamingMessageId: null,
+    scrollTarget: null,
+    handleScrollTargetHandled: vi.fn(),
+    handleSend: mocks.handleSend,
+    isLoadingHistory: false,
+    chatState: "idle",
+    stopStreaming: vi.fn(),
+    projectMetadataPending: false,
+    isCompactingContext: false,
+    workspaceSetupInProgress: false,
+    queue: { queuedMessage: null, dismiss: vi.fn() },
+    draftValue: "",
+    handleDraftChange: mocks.handleDraftChange,
+    personas: [],
+    selectedPersonaId: null,
+    handlePersonaChange: vi.fn(),
+    handleCreatePersona: vi.fn(),
+    pickerAgents: [],
+    providersLoading: false,
+    selectedProvider: "goose",
+    handleProviderChange: vi.fn(),
+    currentModelId: null,
+    currentModelName: null,
+    availableModels: [],
+    modelsLoading: false,
+    modelStatusMessage: null,
+    handleModelChange: vi.fn(),
+    selectedProjectId: null,
+    availableProjects: [],
+    handleProjectChange: vi.fn(),
+    tokenState: { accumulatedTotal: 0, contextLimit: 0 },
+    isContextUsageReady: false,
+    compactConversation: vi.fn(),
+    canCompactContext: false,
+    supportsCompactionControls: false,
+    sessionArtifactCwd: null,
+    project: null,
+  });
+});
+
 describe("ChatView MCP app messaging", () => {
-  afterEach(() => {
-    act(() => cleanup());
-  });
-
-  beforeEach(() => {
-    mocks.messageTimelineSpy.mockClear();
-    mocks.chatInputSpy.mockClear();
-    mocks.chatRightRailSpy.mockClear();
-    mocks.setRightRailOpen.mockClear();
-    mocks.patchSession.mockClear();
-    mocks.handleSend.mockClear();
-    mocks.handleDraftChange.mockClear();
-    mocks.queueTerminalCommand.mockClear();
-    mocks.restartTerminalSession.mockClear();
-    mocks.runCommandInTerminalSession.mockClear();
-    mocks.runCommandInTerminalSession.mockReturnValue(false);
-    mocks.stopTerminalSession.mockClear();
-    mocks.terminalStatusListeners.clear();
-    mocks.isRightRailOpen = false;
-    mocks.activeWorkspaceBySession = {};
-    mocks.afterNextPaintCallbacks = [];
-    mocks.autoFlushAfterNextPaint = true;
-    window.localStorage.clear();
-    mockMatchMedia(false);
-    mocks.useChatSessionController.mockReturnValue({
-      messages: [
-        {
-          id: "user-1",
-          role: "user",
-          created: Date.now(),
-          content: [
-            {
-              type: "text",
-              text: "Hello",
-            },
-          ],
-        },
-      ],
-      streamingMessageId: null,
-      scrollTarget: null,
-      handleScrollTargetHandled: vi.fn(),
-      handleSend: mocks.handleSend,
-      isLoadingHistory: false,
-      chatState: "idle",
-      stopStreaming: vi.fn(),
-      projectMetadataPending: false,
-      isCompactingContext: false,
-      workspaceSetupInProgress: false,
-      queue: { queuedMessage: null, dismiss: vi.fn() },
-      draftValue: "",
-      handleDraftChange: mocks.handleDraftChange,
-      personas: [],
-      selectedPersonaId: null,
-      handlePersonaChange: vi.fn(),
-      handleCreatePersona: vi.fn(),
-      pickerAgents: [],
-      providersLoading: false,
-      selectedProvider: "goose",
-      handleProviderChange: vi.fn(),
-      currentModelId: null,
-      currentModelName: null,
-      availableModels: [],
-      modelsLoading: false,
-      modelStatusMessage: null,
-      handleModelChange: vi.fn(),
-      selectedProjectId: null,
-      availableProjects: [],
-      handleProjectChange: vi.fn(),
-      tokenState: { accumulatedTotal: 0, contextLimit: 0 },
-      isContextUsageReady: false,
-      compactConversation: vi.fn(),
-      canCompactContext: false,
-      supportsCompactionControls: false,
-      sessionArtifactCwd: null,
-      project: null,
-    });
-  });
-
   it("passes fork-from-message through to MessageTimeline with a timestamp cutoff", async () => {
     const user = userEvent.setup();
     const onForkChat = vi.fn();
@@ -2300,5 +2302,139 @@ describe("ChatView MCP app messaging", () => {
       "data-session-key",
       `session-1:${defaultTab.id}`,
     );
+  });
+});
+
+describe("ChatView interactive questions", () => {
+  it("hides the composer while an interactive question is pending", () => {
+    void new Promise((resolve) => {
+      useElicitationStore.getState().enqueue({
+        request: {
+          mode: "form",
+          sessionId: "session-1",
+          message: "Choose a direction",
+          requestedSchema: {
+            type: "object",
+            properties: {
+              direction: {
+                type: "string",
+                title: "Direction",
+                enum: ["local", "upstream"],
+              },
+            },
+          },
+        },
+        resolve,
+      });
+    });
+
+    render(
+      <ChatView
+        sessionId="session-1"
+        activeSession={chatSessionWithWorkingDir("/tmp/project")}
+      />,
+    );
+
+    const inputProps = mocks.chatInputSpy.mock.calls.at(-1)?.[0] as {
+      className?: string;
+    };
+    expect(inputProps.className).toBe("hidden");
+    expect(screen.getByText("Choose a direction")).toBeVisible();
+  });
+
+  it("shows a live question that arrives behind a recovered draft", () => {
+    // The store policy is unit-tested; this pins it at the boundary that
+    // actually strands a turn — what ChatView renders and whether the user can
+    // still type.
+    useElicitationStore.setState({
+      pendingBySessionId: {
+        "session-1": [
+          {
+            id: "recovered-1",
+            semanticKey: "legacy:session-1:recovered-1",
+            wireRequestId: null,
+            request: {
+              mode: "form",
+              sessionId: "session-1",
+              message: "An older question",
+              requestedSchema: {
+                type: "object",
+                properties: { a: { type: "string", title: "A" } },
+              },
+            },
+            content: {},
+            step: 0,
+            recovered: true,
+            continuation: "prompt",
+            resolve: null,
+            responderKey: null,
+            deliveryClaim: null,
+            persistenceScope: null,
+            savedAt: Date.now(),
+          },
+        ],
+      },
+    });
+    void new Promise((resolve) => {
+      useElicitationStore.getState().enqueue({
+        request: {
+          mode: "form",
+          sessionId: "session-1",
+          message: "The live question",
+          requestedSchema: {
+            type: "object",
+            properties: { b: { type: "string", title: "B" } },
+          },
+          _meta: { goose: { elicitationId: "live-1" } },
+        },
+        resolve,
+      });
+    });
+
+    render(
+      <ChatView
+        sessionId="session-1"
+        activeSession={chatSessionWithWorkingDir("/tmp/project")}
+      />,
+    );
+
+    expect(screen.getByText("The live question")).toBeVisible();
+    expect(screen.queryByText("An older question")).toBeNull();
+    const inputProps = mocks.chatInputSpy.mock.calls.at(-1)?.[0] as {
+      className?: string;
+    };
+    expect(inputProps.className).toBe("hidden");
+  });
+
+  it("never shows another chat's question over the open one", () => {
+    // A question belongs to the chat that asked it. The sidebar badge is how an
+    // unattended one is found; it must not appear over unrelated work.
+    void new Promise((resolve) => {
+      useElicitationStore.getState().enqueue({
+        request: {
+          mode: "form",
+          sessionId: "session-elsewhere",
+          message: "A question from another chat",
+          requestedSchema: {
+            type: "object",
+            properties: { a: { type: "string", title: "A" } },
+          },
+        },
+        resolve,
+      });
+    });
+
+    render(
+      <ChatView
+        sessionId="session-1"
+        activeSession={chatSessionWithWorkingDir("/tmp/project")}
+      />,
+    );
+
+    expect(screen.queryByText("A question from another chat")).toBeNull();
+    const inputProps = mocks.chatInputSpy.mock.calls.at(-1)?.[0] as {
+      className?: string;
+    };
+    expect(inputProps.className).toBeUndefined();
   });
 });
