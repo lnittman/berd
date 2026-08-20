@@ -11,6 +11,12 @@ import {
   type AuthWorkspaceList,
 } from "@/features/auth/api/auth";
 import { resetChatRuntimeStartup } from "@/app/lib/chatRuntimeStartup";
+import { persistenceIdentityFromAuthStatus } from "@/features/elicitation/lib/elicitationPersistence";
+import { broadcastElicitationPersistenceIdentity } from "@/features/elicitation/lib/elicitationPersistenceEvents";
+import {
+  clearPersistedElicitations,
+  prepareElicitationPersistenceIdentity,
+} from "@/features/elicitation/stores/elicitationStore";
 import { cn } from "@/shared/lib/cn";
 import { getPlatform } from "@/shared/lib/platform";
 import { SettingsPage } from "@/shared/ui/SettingsPage";
@@ -198,6 +204,10 @@ export function SystemSettings({
       // it on the next login. Clear the startup latch first so that remount
       // re-runs startup instead of reusing this account's run.
       resetChatRuntimeStartup();
+      // Saved question drafts are keyed by session id, which the next account
+      // can reuse, so they must not survive the account that wrote them.
+      await clearPersistedElicitations();
+      await broadcastElicitationPersistenceIdentity(null);
       toast.success(t("account.logoutSuccess"));
       onLoggedOut?.(nextStatus);
     } catch (error) {
@@ -248,6 +258,17 @@ export function SystemSettings({
             }
           : current,
       );
+      await clearPersistedElicitations();
+      const nextIdentity = authStatus
+        ? persistenceIdentityFromAuthStatus(
+            authStatus,
+            activeWorkspaceIdentifier,
+          )
+        : null;
+      if (nextIdentity) {
+        await prepareElicitationPersistenceIdentity(nextIdentity);
+      }
+      await broadcastElicitationPersistenceIdentity(nextIdentity);
       await queryClient.invalidateQueries();
       toast.success(
         t("account.workspace.switchSuccess", {
