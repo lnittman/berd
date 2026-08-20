@@ -19,6 +19,7 @@ pub mod diagnostics;
 pub mod distro;
 #[cfg_attr(not(feature = "block-feedback"), allow(dead_code))]
 pub mod doctor;
+pub mod elicitation_persistence;
 #[cfg(feature = "block-feedback")]
 pub mod feedback;
 pub mod git;
