@@ -9,6 +9,7 @@ import {
 } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { IconLayoutSidebarLeftCollapse } from "@tabler/icons-react";
+import { CircleHelp } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { VirtualMessageTimelineGate } from "./VirtualMessageTimelineGate";
 import { ChatSearchBar } from "./ChatSearchBar";
@@ -79,6 +80,10 @@ import {
   useHasPendingSecurityConfirmation,
   useRegisterSecurityConfirmationSurface,
 } from "@/features/security/ui/SecurityConfirmationPanel";
+import {
+  ElicitationPanel,
+  useHasAttachedElicitation,
+} from "@/features/elicitation/ui/ElicitationPanel";
 
 const CHAT_RESPONDING_PILL_CLASS =
   "rounded-full bg-surface-chat-responding-pill-bg text-surface-chat-responding-pill-fg shadow-[var(--shadow-chat)] [--shimmer-ink:var(--color-surface-chat-responding-pill-fg)]";
@@ -131,6 +136,7 @@ export function ChatView({
   useRegisterSecurityConfirmationSurface(sessionId);
   const hasPendingSecurityConfirmation =
     useHasPendingSecurityConfirmation(sessionId);
+  const hasAttachedElicitation = useHasAttachedElicitation(sessionId);
   const isArtifactViewerOpen = useOpenArtifact(sessionId) !== null;
   const mountStart = useRef(performance.now());
   const terminalRootRef = useRef<HTMLDivElement | null>(null);
@@ -690,6 +696,18 @@ export function ChatView({
       <ActiveChatBerdIndicator size={14} />
       <span>{readOnlyStatus}</span>
     </div>
+  ) : hasAttachedElicitation ? (
+    <div
+      className={cn(
+        "chat-response-status-enter flex h-8 items-center gap-2 px-3 text-sm",
+        CHAT_RESPONDING_PILL_CLASS,
+      )}
+      role="status"
+      aria-live="polite"
+    >
+      <CircleHelp className="size-3.5" aria-hidden="true" />
+      <span>{t("elicitation.waitingStatus")}</span>
+    </div>
   ) : shouldShowLoadingIndicator ? (
     <AnimatePresence initial={false}>
       <div
@@ -739,8 +757,18 @@ export function ChatView({
         )}
       >
         <SecurityConfirmationPanel sessionId={sessionId} />
+        {/* A security confirmation is a safety gate and owns the slot and the
+            focus while it is up. A question waits its turn behind it rather
+            than stacking two interactive surfaces in the same place. */}
+        {hasPendingSecurityConfirmation ? null : (
+          <ElicitationPanel sessionId={sessionId} />
+        )}
         <ChatInput
-          className={hasPendingSecurityConfirmation ? "hidden" : undefined}
+          className={
+            hasPendingSecurityConfirmation || hasAttachedElicitation
+              ? "hidden"
+              : undefined
+          }
           surface="bare"
           innerBareSurface
           queuedMessageAccessory={

@@ -4,6 +4,7 @@ import { isWorktreeStartupMode } from "@/features/projects/api/projects";
 
 import { runChatRuntimeStartup } from "@/app/lib/chatRuntimeStartup";
 import { SessionWindowTopBar } from "@/app/ui/SessionWindowTopBar";
+import { getAuthStatus } from "@/features/auth/api/auth";
 import {
   listenSessionHandoffSnapshotAvailable,
   type SessionHandoffSnapshotAvailable,
@@ -43,6 +44,13 @@ import { ProjectWorkspaceStartupNameDialog } from "@/features/projects/ui/Projec
 import { Button } from "@/shared/ui/button";
 import { SecurityConfirmationFallback } from "@/features/security/ui/SecurityConfirmationPanel";
 import { useSecurityConfirmationStore } from "@/features/security/stores/securityConfirmationStore";
+import { persistenceIdentityFromAuthStatus } from "@/features/elicitation/lib/elicitationPersistence";
+import { listenElicitationPersistenceIdentity } from "@/features/elicitation/lib/elicitationPersistenceEvents";
+import {
+  prepareElicitationPersistenceIdentity,
+  suspendElicitationPersistence,
+} from "@/features/elicitation/stores/elicitationStore";
+import { getBuildFeatureState } from "@/shared/profile/buildProfile";
 
 type Phase = "loading" | "mirror" | "recoverable" | "ready" | "missing";
 
@@ -82,6 +90,17 @@ async function resolveCurrentWindowLabel(fallback: string): Promise<string> {
 
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   return getCurrentWindow().label;
+}
+
+async function readSessionWindowElicitationPersistenceIdentity() {
+  if (!getBuildFeatureState().authGate) {
+    return persistenceIdentityFromAuthStatus(undefined);
+  }
+  try {
+    return persistenceIdentityFromAuthStatus(await getAuthStatus());
+  } catch {
+    return null;
+  }
 }
 
 function applyHandoffSnapshot(payload: SessionHandoffSnapshot) {
@@ -219,8 +238,44 @@ export function SessionWindowApp({
 
   useEffect(() => {
     let cancelled = false;
+    let unlistenIdentity: (() => void) | undefined;
+    let identityRevision = 0;
+    let identityTransition = Promise.resolve();
+
+    const queueIdentityTransition = (
+      identity: ReturnType<typeof persistenceIdentityFromAuthStatus>,
+    ) => {
+      identityRevision += 1;
+      identityTransition = identityTransition.then(async () => {
+        suspendElicitationPersistence();
+        if (identity) await prepareElicitationPersistenceIdentity(identity);
+      });
+      return identityTransition;
+    };
 
     async function bootstrapSessionWindow() {
+      // Register first so a logout/login or workspace event cannot fall into
+      // the gap between the auth snapshot and ACP startup.
+      unlistenIdentity = await listenElicitationPersistenceIdentity(
+        (identity) => {
+          void queueIdentityTransition(identity);
+        },
+      );
+      if (cancelled) {
+        unlistenIdentity();
+        return;
+      }
+      const snapshotRevision = identityRevision;
+      const snapshotIdentity =
+        await readSessionWindowElicitationPersistenceIdentity();
+      if (snapshotRevision === identityRevision) {
+        await queueIdentityTransition(snapshotIdentity);
+      } else {
+        // An event that arrived while auth was being read is newer than the
+        // snapshot and therefore owns the boundary.
+        await identityTransition;
+      }
+      if (cancelled) return;
       await runChatRuntimeStartup();
       if (cancelled) return;
 
@@ -275,6 +330,7 @@ export function SessionWindowApp({
 
     return () => {
       cancelled = true;
+      unlistenIdentity?.();
     };
   }, [currentWindowLabelOverride, loadOwnedSession, sessionId]);
 
